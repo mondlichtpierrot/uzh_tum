@@ -21,5 +21,5 @@ if __name__ == '__main__':
 
         input_s1  = patch['input']['S1']
         input_s2  = patch['input']['S2']
-        input_c   = np.mean(patch['input']['coverage'])
+        input_c   = np.sum(patch['input']['coverage'])/len(patch['input']['coverage'])
         output_s2 = patch['target']['S2']
