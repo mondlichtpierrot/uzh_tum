@@ -3,6 +3,9 @@ import warnings
 import numpy as np
 from tqdm import tqdm
 from natsort import natsorted
+from datetime import datetime
+to_date   = lambda string: datetime.strptime(string, '%Y-%m-%d')
+S1_LAUNCH = to_date('2014-04-03')
 
 import rasterio
 from scipy.ndimage import gaussian_filter
@@ -17,6 +20,7 @@ from util.detect_cloudshadow import get_cloud_mask, get_shadow_mask
     IN: 
     root:               str, path to your copy of the SEN12MS-CR-TS data set
     split:              str, in [all | train | val | test]
+    region:             str, [all | africa | america | asiaEast | asiaWest | europa]
     cloud_masks:        str, type of cloud mask detector to run on optical data, in []
     sample_type:        str, [generic | cloudy_cloudfree]
     n_input_samples:    int, number of input samples in time series
@@ -32,10 +36,10 @@ from util.detect_cloudshadow import get_cloud_mask, get_shadow_mask
 """
 
 class SEN12MSCRTS(Dataset):
-    def __init__(self, root, split="all", cloud_masks='s2cloudless_mask', sample_type='cloudy_cloudfree', n_input_samples=3, rescale_method='default', min_cov=0.0, max_cov=1.0, import_data_path=None, export_data_path=None):
+    def __init__(self, root, split="all", region='all', cloud_masks='s2cloudless_mask', sample_type='cloudy_cloudfree', n_input_samples=3, rescale_method='default', min_cov=0.0, max_cov=1.0, import_data_path=None, export_data_path=None):
         
-        self.root_dir = root  # set root directory which contains all ROI
-        
+        self.root_dir = root   # set root directory which contains all ROI
+        self.region   = region # region according to which the ROI are selected
         self.ROI            = {'ROIs1158': ['106'],
                                'ROIs1868': ['17', '36', '56', '73', '85', '100', '114', '119', '121', '126', '127', '139', '142', '143'],
                                'ROIs1970': ['20', '21', '35', '40', '57', '65', '71', '82', '83', '91', '112', '116', '119', '128', '132', '133', '135', '139', '142', '144', '149'],
@@ -43,12 +47,21 @@ class SEN12MSCRTS(Dataset):
         
         # define splits conform with SEN12MS-CR
         self.splits         = {}
-        all_ROI             = [os.path.join(key, val) for key, vals in self.ROI.items() for val in vals]
-        self.splits['test'] = [os.path.join('ROIs1868', '119'), os.path.join('ROIs1970', '139'), os.path.join('ROIs2017', '108'), os.path.join('ROIs2017', '63'), os.path.join('ROIs1158', '106'), os.path.join('ROIs1868', '73'), os.path.join('ROIs2017', '32'),
-                               os.path.join('ROIs1868', '100'), os.path.join('ROIs1970', '132'), os.path.join('ROIs2017', '103'), os.path.join('ROIs1868', '142'), os.path.join('ROIs1970', '20'), os.path.join('ROIs2017', '140')]  # official test split, across continents
-        self.splits['val']  = [] # insert a validation split here
-        self.splits['train']= [roi for roi in all_ROI if roi not in self.splits['val'] and roi not in self.splits['test']]  # all remaining ROI are used for training
-        
+        if self.region=='all':
+            all_ROI             = [os.path.join(key, val) for key, vals in self.ROI.items() for val in vals]
+            self.splits['test'] = [os.path.join('ROIs1868', '119'), os.path.join('ROIs1970', '139'), os.path.join('ROIs2017', '108'), os.path.join('ROIs2017', '63'), os.path.join('ROIs1158', '106'), os.path.join('ROIs1868', '73'), os.path.join('ROIs2017', '32'),
+                                   os.path.join('ROIs1868', '100'), os.path.join('ROIs1970', '132'), os.path.join('ROIs2017', '103'), os.path.join('ROIs1868', '142'), os.path.join('ROIs1970', '20'), os.path.join('ROIs2017', '140')]  # official test split, across continents
+            self.splits['val']  = [os.path.join('ROIs2017', '22'), os.path.join('ROIs1970', '65'), os.path.join('ROIs2017', '117'), os.path.join('ROIs1868', '127'), os.path.join('ROIs1868', '17')] # insert a validation split here
+            self.splits['train']= [roi for roi in all_ROI if roi not in self.splits['val'] and roi not in self.splits['test']]  # all remaining ROI are used for training
+        elif self.region=='europa':
+            self.splits['test'] = [os.path.join('ROIs1868', '119'), os.path.join('ROIs1970', '139'), os.path.join('ROIs2017', '108'), os.path.join('ROIs2017', '63'), os.path.join('ROIs1158', '106'), os.path.join('ROIs1868', '73'), os.path.join('ROIs2017', '32'),
+                                   os.path.join('ROIs1868', '100'), os.path.join('ROIs1970', '132'), os.path.join('ROIs2017', '103'), os.path.join('ROIs1868', '142'), os.path.join('ROIs1970', '20'), os.path.join('ROIs2017', '140')]  # official test split, across continents
+            self.splits['val']  = [os.path.join('ROIs1868', '17')] # insert a validation split here
+            self.splits['train']= [os.path.join('ROIs1868', '56'), os.path.join('ROIs1868', '121'), os.path.join('ROIs1868', '139'),
+                                   os.path.join('ROIs1970', '71'), os.path.join('ROIs1970', '91'), os.path.join('ROIs1970', '119'), os.path.join('ROIs1970', '128'), os.path.join('ROIs1970', '133'), os.path.join('ROIs1970', '144'), os.path.join('ROIs1970', '149'),
+                                   os.path.join('ROIs2017', '146')]
+        else: raise NotImplementedError
+
         self.splits["all"]  = self.splits["train"] + self.splits["test"] + self.splits["val"]
         self.split = split
         
@@ -78,7 +91,7 @@ class SEN12MSCRTS(Dataset):
             self.data_pairs = np.load(import_here, allow_pickle=True).item()
             print(f'Importing data pairings for split {self.split} from {import_here}.')
 
-        self.paths          = self.get_paths()
+        self.paths          = self.get_paths()#[:5] ############## TODO: for debugging
         self.n_samples      = len(self.paths)
 
         # raise a warning that no data has been found
@@ -112,7 +125,7 @@ class SEN12MSCRTS(Dataset):
 
     # indexes all patches contained in the current data split
     def get_paths(self):  # assuming for the same ROI+num, the patch numbers are the same
-        print(f'\nProcessing paths for {self.split} split')
+        print(f'\nProcessing paths for {self.split} split of region {self.region}')
 
         paths = []
         for roi_dir, rois in self.ROI.items():
@@ -212,10 +225,17 @@ class SEN12MSCRTS(Dataset):
 
     def __getitem__(self, pdx):  # get the time series of one patch
 
+        # get images
         s1          = [self.process_SAR(self.read_img(os.path.join(self.root_dir, img)), self.method) for img in self.paths[pdx]['S1']]
         s2          = [self.read_img(os.path.join(self.root_dir, img)) for img in self.paths[pdx]['S2']]  # note: pre-processing happens after cloud detection
         masks       = None if not self.cloud_masks else [self.get_cloud_mask(img) for img in s2]
+
+        # get statistics and additional meta information
         coverage    = [np.mean(mask) for mask in masks]
+        s1_dates    = [to_date(img.split('/')[-1].split('_')[5]) for img in self.paths[pdx]['S1']]
+        s2_dates    = [to_date(img.split('/')[-1].split('_')[5]) for img in self.paths[pdx]['S2']]
+        s1_td       = [(date-S1_LAUNCH).days for date in s1_dates]
+        s2_td       = [(date-S1_LAUNCH).days for date in s2_dates]
 
         # generate data of ((cloudy_t1, cloudy_t2, ..., cloudy_tn), cloud-free) pairings
         # note: filtering the data (e.g. according to cloud coverage etc) and may only use a fraction of the data set
@@ -226,7 +246,7 @@ class SEN12MSCRTS(Dataset):
                 inputs_idx    = self.data_pairs[pdx]['input']
                 cloudless_idx = self.data_pairs[pdx]['target']
                 target_s1, target_s2, target_mask = np.array(s1)[cloudless_idx], np.array(s2)[cloudless_idx], np.array(masks)[cloudless_idx]
-                input_s1, input_s2, input_masks = np.array(s1)[inputs_idx], np.array(s2)[inputs_idx], np.array(masks)[inputs_idx]
+                input_s1, input_s2, input_masks   = np.array(s1)[inputs_idx], np.array(s2)[inputs_idx], np.array(masks)[inputs_idx]
                 coverage_match = True
 
             else:  # sample custom time points from the current patch space in the current split
@@ -262,13 +282,18 @@ class SEN12MSCRTS(Dataset):
             sample = {'input': {'S1': list(input_s1),
                                 'S2': [self.process_MS(img, self.method) for img in input_s2],
                                 'masks': list(input_masks),
-                                'coverage': [np.mean(mask) for mask in input_masks]
+                                'coverage': [np.mean(mask) for mask in input_masks],
+                                'S1 TD': [s1_td[idx] for idx in inputs_idx],
+                                'S2 TD': [s2_td[idx] for idx in inputs_idx]
                                 },
                       'target': {'S1': [target_s1],
                                  'S2': [self.process_MS(target_s2, self.method)],
                                  'S2_path': os.path.join(self.root_dir, self.paths[pdx]['S2'][cloudless_idx]),
                                  'masks': [target_mask],
-                                 'coverage': [np.mean(target_mask)]},
+                                 'coverage': [np.mean(target_mask)],
+                                'S1 TD': [s1_td[cloudless_idx]],
+                                'S2 TD': [s2_td[cloudless_idx]]
+                                 },
                        'coverage_bin': coverage_match
                       }
 
@@ -276,7 +301,9 @@ class SEN12MSCRTS(Dataset):
             sample = {'S1': s1,
                       'S2': [self.process_MS(img, self.method) for img in s2],
                       'masks': masks,
-                      'coverage': coverage
+                      'coverage': coverage,
+                      'S1 TD': s1_td,
+                      'S2 TD': s2_td
                       }
         return sample
 
