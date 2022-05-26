@@ -143,15 +143,17 @@ def get_model(config, mode="semantic"):
     elif mode == "reconstruct":
         if config.model == "utae":
             model = utae.UTAE(
-                input_dim=2+13, # S1 + S2
+                input_dim=2*config.use_sar+13, # S1 + S2
                 encoder_widths=config.encoder_widths,
                 decoder_widths=config.decoder_widths,
                 out_conv=config.out_conv,
+                out_sigm=config.out_sigm,
                 str_conv_k=config.str_conv_k,
                 str_conv_s=config.str_conv_s,
                 str_conv_p=config.str_conv_p,
                 agg_mode=config.agg_mode,
                 encoder_norm=config.encoder_norm,
+                decoder_norm=config.decoder_norm,
                 n_head=config.n_head,
                 d_model=config.d_model,
                 d_k=config.d_k,
@@ -160,6 +162,13 @@ def get_model(config, mode="semantic"):
                 pad_value=config.pad_value,
                 padding_mode=config.padding_mode,
         )
+        elif config.model == "unet3d":
+            model = unet3d.UNet3D(
+                in_channel=2*config.use_sar+13, 
+                n_classes=13, 
+                pad_value=config.pad_value,
+                out_sigm=config.out_sigm
+            )
         else: raise NotImplementedError
         return model
     else:

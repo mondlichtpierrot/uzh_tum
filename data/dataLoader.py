@@ -53,10 +53,31 @@ class SEN12MSCRTS(Dataset):
                                    os.path.join('ROIs1868', '100'), os.path.join('ROIs1970', '132'), os.path.join('ROIs2017', '103'), os.path.join('ROIs1868', '142'), os.path.join('ROIs1970', '20'), os.path.join('ROIs2017', '140')]  # official test split, across continents
             self.splits['val']  = [os.path.join('ROIs2017', '22'), os.path.join('ROIs1970', '65'), os.path.join('ROIs2017', '117'), os.path.join('ROIs1868', '127'), os.path.join('ROIs1868', '17')] # insert a validation split here
             self.splits['train']= [roi for roi in all_ROI if roi not in self.splits['val'] and roi not in self.splits['test']]  # all remaining ROI are used for training
+        elif self.region=='africa':
+            self.splits['test'] = [os.path.join('ROIs2017', '32'), os.path.join('ROIs2017', '140')]
+            self.splits['val']  = [os.path.join('ROIs2017', '22')]
+            self.splits['train']= [os.path.join('ROIs1970', '21'), os.path.join('ROIs1970', '35'), os.path.join('ROIs1970', '40'),
+                                   os.path.join('ROIs2017', '8'), os.path.join('ROIs2017', '61'), os.path.join('ROIs2017', '75')]
+        elif self.region=='america':
+            self.splits['test'] = [os.path.join('ROIs1158', '106'), os.path.join('ROIs1970', '132')]
+            self.splits['val']  = [os.path.join('ROIs1970', '65')]
+            self.splits['train']= [os.path.join('ROIs1868', '36'), os.path.join('ROIs1868', '85'),
+                                   os.path.join('ROIs1970', '82'), os.path.join('ROIs1970', '142'),
+                                   os.path.join('ROIs2017', '49'), os.path.join('ROIs2017', '116')]
+        elif self.region=='asiaEast':
+            self.splits['test'] = [os.path.join('ROIs1868', '73'), os.path.join('ROIs1868', '119'), os.path.join('ROIs1970', '139')]
+            self.splits['val']  = [os.path.join('ROIs2017', '117')]
+            self.splits['train']= [os.path.join('ROIs1868', '114'), os.path.join('ROIs1868', '126'), os.path.join('ROIs1868', '143'), 
+                                   os.path.join('ROIs1970', '116'), os.path.join('ROIs1970', '135'),
+                                   os.path.join('ROIs2017', '25')]
+        elif self.region=='asiaWest':
+            self.splits['test'] = [os.path.join('ROIs1868', '100')]
+            self.splits['val']  = [os.path.join('ROIs1868', '127')]
+            self.splits['train']= [os.path.join('ROIs1970', '57'), os.path.join('ROIs1970', '83'), os.path.join('ROIs1970', '112'),
+                                   os.path.join('ROIs2017', '69'), os.path.join('ROIs1970', '115'), os.path.join('ROIs1970', '130')]
         elif self.region=='europa':
-            self.splits['test'] = [os.path.join('ROIs1868', '119'), os.path.join('ROIs1970', '139'), os.path.join('ROIs2017', '108'), os.path.join('ROIs2017', '63'), os.path.join('ROIs1158', '106'), os.path.join('ROIs1868', '73'), os.path.join('ROIs2017', '32'),
-                                   os.path.join('ROIs1868', '100'), os.path.join('ROIs1970', '132'), os.path.join('ROIs2017', '103'), os.path.join('ROIs1868', '142'), os.path.join('ROIs1970', '20'), os.path.join('ROIs2017', '140')]  # official test split, across continents
-            self.splits['val']  = [os.path.join('ROIs1868', '17')] # insert a validation split here
+            self.splits['test'] = [os.path.join('ROIs2017', '63'), os.path.join('ROIs2017', '103'), os.path.join('ROIs2017', '108'), os.path.join('ROIs1868', '142'), os.path.join('ROIs1970', '20')]
+            self.splits['val']  = [os.path.join('ROIs1868', '17')]
             self.splits['train']= [os.path.join('ROIs1868', '56'), os.path.join('ROIs1868', '121'), os.path.join('ROIs1868', '139'),
                                    os.path.join('ROIs1970', '71'), os.path.join('ROIs1970', '91'), os.path.join('ROIs1970', '119'), os.path.join('ROIs1970', '128'), os.path.join('ROIs1970', '133'), os.path.join('ROIs1970', '144'), os.path.join('ROIs1970', '149'),
                                    os.path.join('ROIs2017', '146')]
@@ -91,7 +112,7 @@ class SEN12MSCRTS(Dataset):
             self.data_pairs = np.load(import_here, allow_pickle=True).item()
             print(f'Importing data pairings for split {self.split} from {import_here}.')
 
-        self.paths          = self.get_paths()#[:5] ############## TODO: for debugging
+        self.paths          = self.get_paths()[:5] ############## TODO: for debugging
         self.n_samples      = len(self.paths)
 
         # raise a warning that no data has been found

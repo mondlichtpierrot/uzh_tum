@@ -4,6 +4,16 @@ Author: Patrick Ebel (github/PatrickTUM), based on the scripts of
         Vivien Sainte Fare Garnot (github/VSainteuf)
 License: MIT
 """
+
+"""
+out = model(x, batch_positions=dates).unsqueeze(1)
+out = (1+model(2*x-1, batch_positions=dates).unsqueeze(1))/2
+
+changed --epochs to 200 and --val_after to 100000
+changed --model and --loss and --use_sar (so we can just copy y to x)
+
+indexing [:5 in data loader], shuffle=False in wrapper of loader
+"""
 import argparse
 import json
 import os
@@ -26,6 +36,7 @@ from src.learning.metrics import confusion_matrix_analysis
 #from src.learning.miou import IoU
 from src.learning.weight_init import weight_init
 
+import torchgeometry as tgm
 sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
 from data.dataLoader import SEN12MSCRTS
 from src.learning.metrics import img_metrics, avg_img_metrics
@@ -42,13 +53,16 @@ parser.add_argument(
 parser.add_argument("--encoder_widths", default="[64,64,64,128]", type=str)
 parser.add_argument("--decoder_widths", default="[32,32,64,128]", type=str)
 parser.add_argument("--out_conv", default="[32, 13]") # changed from [32, 20]
+parser.add_argument("--out_sigm", dest="out_sigm", action="store_false", help="whether to apply an output nonlinearity") 
+parser.add_argument("--use_sar", dest="use_sar", action="store_true", help="whether to use SAR or not") 
 parser.add_argument("--str_conv_k", default=4, type=int)
 parser.add_argument("--str_conv_s", default=2, type=int)
 parser.add_argument("--str_conv_p", default=1, type=int)
 parser.add_argument("--agg_mode", default="att_group", type=str)
 parser.add_argument("--encoder_norm", default="group", type=str)
-parser.add_argument("--n_head", default=16, type=int)                ###################### TODO: default:16, for debugging:4
-parser.add_argument("--d_model", default=256, type=int)              ###################### TODO: default:256, for debugging:64
+parser.add_argument("--decoder_norm", default="group", type=str)
+parser.add_argument("--n_head", default=16, type=int, help="default value of 16, 4 for debugging") # TODO
+parser.add_argument("--d_model", default=256, type=int, help="default value of 256, 64 for debugging") # TODO
 parser.add_argument("--d_k", default=4, type=int)
 
 # Set-up parameters
@@ -91,10 +105,10 @@ parser.add_argument(
     help="If specified, the whole dataset is kept in RAM",
 )
 # Training parameters
-parser.add_argument("--epochs", default=20, type=int, help="Number of epochs per fold")
-parser.add_argument("--batch_size", default=1, type=int, help="Batch size")
-parser.add_argument("--lr", default=0.01, type=float, help="Learning rate") ###################### TODO: default:0.001
-parser.add_argument("--mono_date", default=None, type=str) # TODO: what is this?
+parser.add_argument("--epochs", default=200, type=int, help="Number of epochs per fold") ############### TODO
+parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
+parser.add_argument("--lr", default=0.01, type=float, help="Learning rate, e.g. 0.001") # TODO
+parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2014-04-03", type=str)
 parser.add_argument(
     "--fold",
@@ -102,7 +116,7 @@ parser.add_argument(
     type=int,
     help="Do only one of the five fold (between 1 and 5)",
 )
-parser.add_argument("--num_classes", default=20, type=int) # TODO: no longer in use
+parser.add_argument("--num_classes", default=20, type=int) # TODO: not used for reconstruction
 parser.add_argument("--ignore_index", default=-1, type=int)
 parser.add_argument("--pad_value", default=0, type=float)
 parser.add_argument("--padding_mode", default="reflect", type=str)
@@ -114,25 +128,26 @@ parser.add_argument(
 )
 parser.add_argument(
     "--val_after",
-    default=0,
+    default=1000000000000000000000000000000000000000000000000000000,
     type=int,
     help="Do validation only after that many epochs.",
 )
 
 # flags specific to SEN12MS-CR-TS
-parser.add_argument("--input_t", default=3, type=int, help="number of input time points to sample")
+parser.add_argument("--input_t", default=4, type=int, help="number of input time points to sample, unet3d needs at least 4 time points")
 parser.add_argument("--sample_type", default="cloudy_cloudfree", type=str, help="type of samples returned [cloudy_cloudfree | generic]")
 parser.add_argument("--root", default='/media/DATA/SEN12MSCRTS', type=str, help="path to your copy of SEN12MS-CR-TS")
 
 parser.add_argument("--region", default="europa", type=str, help="region to (sub-)sample ROI from [all | europa]")
 parser.add_argument("--input_size", default=256, type=int, help="size of input patches to (sub-)sample")
 parser.add_argument("--plot_every", default=1, type=int, help="Interval (in items) of exporting plots at validation or test time.")
+parser.add_argument("--loss", default="ssim", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim].")
 
 
 list_args = ["encoder_widths", "decoder_widths", "out_conv"]
 parser.set_defaults(cache=False)
 
-def plot_img(imgs, mod, split, file_id=None):
+def plot_img(imgs, mod, epoch, split, file_id=None):
     imgs = imgs.cpu().numpy()
     for tdx, img in enumerate(imgs): # iterate over temporal dimension
         if mod in ["pred", "in", "target"]:
@@ -145,33 +160,39 @@ def plot_img(imgs, mod, split, file_id=None):
         elif mod == "mask":
             img = np.clip(img[[0], ...], 0, 1)
         if file_id is not None: # export into file name
-            plot_dir = os.path.join(config.res_dir, config.experiment_name, 'plots')
+            plot_dir = os.path.join(config.res_dir, config.experiment_name, 'plots', f'epoch_{epoch}', f'{split}')
             if not os.path.exists(plot_dir): os.makedirs(plot_dir)
-            plt.imsave(os.path.join(plot_dir, f'{split}-img-{file_id}_{mod}_t-{tdx}.png'), np.moveaxis(img,0,-1), dpi=10)
+            plt.imsave(os.path.join(plot_dir, f'img-{file_id}_{mod}_t-{tdx}.png'), np.moveaxis(img,0,-1), dpi=10)
     return img
 
 def iterate(
-    model, data_loader, criterion, config, optimizer=None, mode="train", device=None):
+    model, data_loader, criterion, config, optimizer=None, mode="train", epoch=None, device=None):
     loss_meter = tnt.meter.AverageValueMeter()
     img_meter = avg_img_metrics()
 
     t_start = time.time()
     for i, batch in enumerate(tqdm(data_loader)):
         if config.sample_type == 'cloudy_cloudfree':
-            in_S1 = recursive_todevice(batch['input']['S1'], device)
             in_S2 = recursive_todevice(batch['input']['S2'], device)
-            in_S1_td = recursive_todevice(batch['input']['S1 TD'], device)
             in_S2_td = recursive_todevice(batch['input']['S2 TD'], device)
+            if config.batch_size>1: in_S2_td = torch.stack((in_S2_td)).T
             in_m  = torch.stack(recursive_todevice(batch['input']['masks'], device)).swapaxes(0,1)
             #target_S1 = recursive_todevice(batch['target']['S1'], device)
             target_S2 = recursive_todevice(batch['target']['S2'], device)
             #target_S1_td = recursive_todevice(batch['target']['S1 TD'], device)
             #target_S2_td = recursive_todevice(batch['target']['S2 TD'], device)
             #target_m  = recursive_todevice(batch['target']['masks'], device)
-            x     = torch.cat((torch.stack(in_S1,dim=1), torch.stack(in_S2,dim=1)),dim=2)
-            y     = torch.cat(target_S2,dim=0)[None]
-            #y     = torch.cat((target_S1[0][None], target_S2[0][None]),dim=2)
-            dates = torch.stack((torch.tensor(in_S1_td),torch.tensor(in_S2_td))).float().mean(dim=0).to(device)
+            y     = torch.cat(target_S2,dim=0).unsqueeze(1)
+
+            if config.use_sar: 
+                in_S1 = recursive_todevice(batch['input']['S1'], device)
+                in_S1_td = recursive_todevice(batch['input']['S1 TD'], device)
+                if config.batch_size>1: in_S1_td = torch.stack((in_S1_td)).T
+                x     = torch.cat((torch.stack(in_S1,dim=1), torch.stack(in_S2,dim=1)),dim=2)
+                dates = torch.stack((torch.tensor(in_S1_td),torch.tensor(in_S2_td))).float().mean(dim=0).to(device)
+            else:
+                x     = torch.stack(in_S2,dim=1)
+                dates = torch.tensor(in_S2_td).float().to(device)
 
             if config.input_size < 256: # batch sub-samples if mosaicing patches
                 x_mosaic = x.unfold(4, config.input_size, config.input_size).unfold(3, config.input_size, config.input_size)
@@ -194,15 +215,32 @@ def iterate(
                     img_meter.add(extended_metrics)
                     idx = (i*batch_size+bdx) # plot and export every k-th item
                     if idx % config.plot_every == 0:
-                        plot_img(x[bdx], 'in', mode, file_id=idx)
-                        plot_img(out[bdx], 'pred', mode, file_id=idx)
-                        plot_img(y[bdx], 'target', mode, file_id=idx)
+                        plot_img(x[bdx], 'in', epoch, mode, file_id=idx)
+                        plot_img(out[bdx], 'pred', epoch, mode, file_id=idx)
+                        plot_img(y[bdx], 'target', epoch, mode, file_id=idx)
                         
         else:
             optimizer.zero_grad()
+            if torch.isnan(x).sum(): print("DOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO") # TODO
+            #x = y.repeat((1,config.input_t,1,1,1)) # TODO
+            #x = 0.725*torch.ones_like(x, device=device) # TODO
+            #y = 0.725*torch.ones_like(y, device=device) # TODO
             out = model(x, batch_positions=dates).unsqueeze(1)
+            #"""" #TODO
+            plot_out = out.detach()
+            batch_size = y.size()[0]
+            for bdx in range(batch_size):
+                idx = (i*batch_size+bdx) # plot and export every k-th item
+                if idx % config.plot_every == 0:
+                    plot_img(x[bdx], 'in', epoch, mode, file_id=idx)
+                    plot_img(plot_out[bdx], 'pred', epoch, mode, file_id=idx)
+                    plot_img(y[bdx], 'target', epoch, mode, file_id=idx)
+            #""""
 
-        loss = criterion(out, y)
+        if criterion._get_name()=='SSIM':
+            loss = criterion(out[:,0,...], y[:,0,...])
+        else:
+            loss = criterion(out, y)
         if mode == "train":
             loss.backward()
             optimizer.step()
@@ -211,6 +249,8 @@ def iterate(
         #    pred = out.argmax(dim=1)
         #iou_meter.add(pred, y)
         loss_meter.add(loss.item())
+
+        print(f'Prediction min {out.min()}, max {out.max()}, mean {out.mean()}, std {out.std()}. Loss {loss}.') # TODO
 
         if (i + 1) % config.display_step == 0:
             #miou, acc = iou_meter.get_miou_acc()
@@ -300,23 +340,7 @@ def main(config):
     #for fold, (train_folds, val_fold, test_fold) in enumerate(fold_sequence):
 
     # define data sets
-    """
-    # Dataset definition
-    dt_args = dict(
-    folder=config.dataset_folder,
-    norm=True,
-    reference_date=config.ref_date,
-    mono_date=config.mono_date,
-    target="semantic",
-    sats=["S2"],
-    )
-
-    dt_train = PASTIS_Dataset(**dt_args, folds=train_folds, cache=config.cache)
-    dt_val = PASTIS_Dataset(**dt_args, folds=val_fold, cache=config.cache)
-    dt_test = PASTIS_Dataset(**dt_args, folds=test_fold)
-    """
-
-    fold        = 0 # n-fold cross-val may be to cumbersome for SEN12MSCRTS, keeping this var to avoid breaking downstream code
+    fold        = 0 # n-fold cross-val may be to cumbersome for SEN12MSCRTS, hardcoding this var for now to avoid breaking downstream code
     dt_train    = SEN12MSCRTS(os.path.expanduser(config.root), split='train', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None)
     dt_val      = SEN12MSCRTS(os.path.expanduser('~/Data/SEN12MSCR_val_test'), split='val', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None) 
     dt_test     = SEN12MSCRTS(os.path.expanduser('~/Data/SEN12MSCR_val_test'), split='test', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None)
@@ -325,7 +349,7 @@ def main(config):
     train_loader = data.DataLoader(
         dt_train,
         batch_size=config.batch_size,
-        shuffle=True,
+        shuffle=False,############################################################True,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -364,11 +388,21 @@ def main(config):
 
     # Optimizer and Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
-    criterion = nn.L1Loss() # or: nn.MSELoss()
+    if config.loss=="l1":
+        criterion = nn.L1Loss()
+        best_loss = float("inf")
+        is_better = lambda new, prev: new <= prev
+    elif config.loss=="l2":
+        criterion = nn.MSELoss()
+        best_loss = float("inf")
+        is_better = lambda new, prev: new <= prev
+    elif config.loss=="ssim": #  loss is SDSIM: (1-SSIM)/2
+        criterion = tgm.losses.SSIM(5, reduction='mean')
+        best_loss = float("inf")
+        is_better = lambda new, prev: new <= prev
 
     # Training loop
     trainlog = {}
-    best_L1  = float("inf")
     for epoch in range(1, config.epochs + 1):
         print("EPOCH {}/{}".format(epoch, config.epochs))
 
@@ -380,6 +414,7 @@ def main(config):
             config=config,
             optimizer=optimizer,
             mode="train",
+            epoch=epoch,
             device=device,
         )
         # do regular validation steps
@@ -393,6 +428,7 @@ def main(config):
                                             config=config,
                                             optimizer=optimizer,
                                             mode="val",
+                                            epoch=epoch,
                                             device=device,
                                         )
 
@@ -400,12 +436,12 @@ def main(config):
             print(f' validation image metrics: {val_img_metrics}')
             #val_metrics["val_loss"],
             #val_metrics["val_accuracy"],
-            #val_metrics["best_L1"],
+            #val_metrics["best_loss"],
 
             trainlog[epoch] = {**train_metrics, **val_metrics}
             checkpoint(fold+1, trainlog, config)
-            if val_metrics["val_loss"] <= best_L1:
-                best_L1 = val_metrics["val_loss"]
+            if is_better(val_metrics["val_loss"], best_loss):
+                best_loss = val_metrics["val_loss"]
                 torch.save(
                     {
                         "epoch": epoch,
@@ -431,13 +467,14 @@ def main(config):
     )
     model.eval()
 
-    test_metrics, test_img_metrics = iterate(#, conf_mat = iterate(
+    test_metrics, test_img_metrics = iterate(
                                     model,
                                     data_loader=test_loader,
                                     criterion=criterion,
                                     config=config,
                                     optimizer=optimizer,
                                     mode="test",
+                                    epoch=epoch,
                                     device=device,
                                 )
     print(f'Loss {test_metrics["test_loss"]}')

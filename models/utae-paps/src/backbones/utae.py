@@ -17,11 +17,13 @@ class UTAE(nn.Module):
         encoder_widths=[64, 64, 64, 128],
         decoder_widths=[32, 32, 64, 128],
         out_conv=[32, 20],
+        out_sigm=False,
         str_conv_k=4,
         str_conv_s=2,
         str_conv_p=1,
         agg_mode="att_group",
         encoder_norm="group",
+        decoder_norm="group",
         n_head=16,
         d_model=256,
         d_k=4,
@@ -56,6 +58,7 @@ class UTAE(nn.Module):
                 - group : GroupNorm (default)
                 - batch : BatchNorm
                 - instance : InstanceNorm
+            decoder_norm (str): similar to encoder_norm
             n_head (int): Number of heads in LTAE.
             d_model (int): Parameter of LTAE
             d_k (int): Key-Query space dimension
@@ -113,7 +116,7 @@ class UTAE(nn.Module):
                 k=str_conv_k,
                 s=str_conv_s,
                 p=str_conv_p,
-                norm="batch",
+                norm=decoder_norm, #"batch",
                 padding_mode=padding_mode,
             )
             for i in range(self.n_stages - 1, 0, -1)
@@ -127,7 +130,9 @@ class UTAE(nn.Module):
             d_k=d_k,
         )
         self.temporal_aggregator = Temporal_Aggregator(mode=agg_mode)
-        self.out_conv = ConvBlock(nkernels=[decoder_widths[0]] + out_conv, padding_mode=padding_mode)
+        # note: use either an output ReLU after the ConvBlock or a sigmoid
+        self.out_conv = ConvBlock(nkernels=[decoder_widths[0]] + out_conv, padding_mode=padding_mode, last_relu=not out_sigm)
+        if out_sigm: self.out_sigm = nn.Sigmoid()
 
     def forward(self, input, batch_positions=None, return_att=False):
         pad_mask = (
@@ -158,6 +163,8 @@ class UTAE(nn.Module):
             return out, maps
         else:
             out = self.out_conv(out)
+            # optionally apply an output nonlinearity
+            if hasattr(self, 'out_sigm'): out=self.out_sigm(out)
             if return_att:
                 return out, att
             if self.return_maps:

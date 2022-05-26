@@ -50,7 +50,7 @@ def up_conv_block(in_dim, out_dim):
 
 
 class UNet3D(nn.Module):
-    def __init__(self, in_channel, n_classes, feats=8, pad_value=None, zero_pad=True):
+    def __init__(self, in_channel, n_classes, feats=8, pad_value=None, zero_pad=True, out_sigm=False):
         super(UNet3D, self).__init__()
         self.in_channel = in_channel
         self.n_classes = n_classes
@@ -67,12 +67,13 @@ class UNet3D(nn.Module):
         self.trans3 = up_conv_block(feats * 8, feats * 4)
         self.dc3 = conv_block(feats * 8, feats * 4, feats * 2)
         self.final = nn.Conv3d(feats * 2, n_classes, kernel_size=3, stride=1, padding=1)
+        if out_sigm: self.out_sigm = nn.Sigmoid()
         # self.fn = nn.Linear(timesteps, 1)
         # self.logsoftmax = nn.LogSoftmax(dim=1)
         # self.dropout = nn.Dropout(p=dropout, inplace=True)
 
     def forward(self, x, batch_positions=None):
-        out = x.permute(0, 2, 1, 3, 4)
+        out = x.permute(0, 2, 1, 3, 4) # x was BxTxCxHxW, now BxCxTxHxW
         if self.pad_value is not None:
             pad_mask = (out == self.pad_value).all(dim=-1).all(dim=-1).all(dim=1)  # BxT pad mask
             if self.zero_pad:
@@ -105,6 +106,7 @@ class UNet3D(nn.Module):
                 out = final.mean(dim=-1)
         else:
             out = final.mean(dim=-1)
+        if hasattr(self, 'out_sigm'): out=self.out_sigm(out)
         # final = self.dropout(final)
         # final = self.fn(final)
         # final = final.reshape(shape_num)

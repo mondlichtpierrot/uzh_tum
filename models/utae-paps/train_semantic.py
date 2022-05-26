@@ -241,9 +241,7 @@ def main(config):
     prepare_output(config)
     device = torch.device(config.device)
 
-    fold_sequence = (
-        fold_sequence if config.fold is None else [fold_sequence[config.fold - 1]]
-    )
+    fold_sequence = (fold_sequence if config.fold is None else [fold_sequence[config.fold - 1]])
     for fold, (train_folds, val_fold, test_fold) in enumerate(fold_sequence):
         if config.fold is not None:
             fold = config.fold - 1
