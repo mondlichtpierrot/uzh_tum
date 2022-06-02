@@ -59,7 +59,7 @@ parser.add_argument("--encoder_widths", default="[64,64,64,128]", type=str)
 parser.add_argument("--decoder_widths", default="[32,32,64,128]", type=str)
 parser.add_argument("--out_conv", default="[32, 13]") # changed from [32, 20]
 parser.add_argument("--out_sigm", dest="out_sigm", action="store_false", help="whether to apply an output nonlinearity") 
-parser.add_argument("--use_sar", dest="use_sar", action="store_true", help="whether to use SAR or not") 
+parser.add_argument("--use_sar", dest="use_sar", action="store_false", help="whether to use SAR or not") 
 parser.add_argument("--str_conv_k", default=4, type=int)
 parser.add_argument("--str_conv_s", default=2, type=int)
 parser.add_argument("--str_conv_p", default=1, type=int)
@@ -84,7 +84,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--experiment_name",
-    default='dbg', #"utae_L1SSIM_perceptual01video",
+    default='utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -110,7 +110,7 @@ parser.add_argument(
     help="If specified, the whole dataset is kept in RAM",
 )
 # Training parameters
-parser.add_argument("--epochs", default=500, type=int, help="Number of epochs per fold") ############### TODO
+parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold") ############### TODO
 parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
 parser.add_argument("--lr", default=0.01, type=float, help="Learning rate, e.g. 0.001") # TODO
 parser.add_argument("--mono_date", default=None, type=str)
@@ -252,11 +252,15 @@ def iterate(
                 #if step%config.display_step==0: 
                 writer.add_scalar('Loss/train/perceptual', perceptual, step)
                 # rescale perceptual loss prop. to lr
-                loss += 0.1*config.lr*perceptual
+                loss += 1*config.lr*perceptual
             #if step%config.display_step==0: 
             writer.add_scalar('Loss/train/total', loss, step)
             # use add_images for batch-wise adding across temporal dimension
-            writer.add_image('Img/train/in', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
+            if config.use_sar:
+                writer.add_image('Img/train/in_s1', x[0,:,[0], ...], step, dataformats='NCHW')
+                writer.add_image('Img/train/in_s2', x[0,:,[5,4,3], ...], step, dataformats='NCHW')
+            else:
+                writer.add_image('Img/train/in_s2', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
             writer.add_image('Img/train/out', out[0,0,[3,2,1], ...], step, dataformats='CHW')
             writer.add_image('Img/train/y', y[0,0,[3,2,1], ...], step, dataformats='CHW')
             loss.backward()
@@ -267,7 +271,7 @@ def iterate(
         #iou_meter.add(pred, y)
         loss_meter.add(loss.item())
 
-        print(f'Prediction min {out.min()}, max {out.max()}, mean {out.mean()}, std {out.std()}. Loss {loss}.') # TODO
+        # print(f'Prediction min {out.min()}, max {out.max()}, mean {out.mean()}, std {out.std()}. Loss {loss}.') # TODO
 
         # report training metrics on terminal
         if (i + 1) % config.display_step == 0:
