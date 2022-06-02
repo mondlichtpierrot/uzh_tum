@@ -212,3 +212,42 @@ class LossNetwork(nn.Module):
                         feature_list.append(x)
             else:
                 return feature_list
+
+
+def get_perceptual_loss(net, fake, real):
+    loss = 0.
+
+    """
+    if self.opt.alter_initial_model:
+        method = 'resnet'
+    else:
+        method = 'default'
+    fake = self.netL(self.scale_to_01(self.fake_B, method))
+    real = self.netL(self.scale_to_01(self.real_B, method))
+    # pre-trained VGG16 expects input to be in [0, 1],
+    # --> ResNet (baseline or initial model) input and target S2 patches are in [0, 5],
+    #     STGAN (no pre-trained ResNet) input and target patches are in []
+    #     outputs of STGAN (model resnet_9blocks) are in [-1, +1] via Tanh()
+    #     outputs of 3D net (model ResnetGenerator3DWithoutBottleneck) are in [-1, +1] via Tanh()
+    """
+
+    """
+    if self.opt.alter_initial_model:
+        # change 
+        fake = self.netL(self.fake_B)
+        real = self.netL(self.real_B, method)
+    else:
+        fake = self.netL(self.fake_B)
+        real = self.netL(self.real_B, method)
+    """
+    mse = torch.nn.MSELoss()
+    # iterate over batch
+    for b in range(len(fake)): # TODO: parallelize batching, loop over temporal dimension instead
+        # note: pre-trained VGG16 expects input to be in [0, 1]
+        # and shapes should be 3D (unbatched) or 4D (batched)
+        fake_l, real_l = net(fake[b]), net(real[b])
+        # iterate over individual layers that perceptual loss is computed over
+        for i in range(len(fake_l)):
+            loss += mse(fake_l[i], real_l[i])
+    batch_size = fake.shape[0]
+    return loss / batch_size

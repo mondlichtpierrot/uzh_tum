@@ -15,7 +15,7 @@ if __name__ == '__main__':
     sample_type = 'cloudy_cloudfree'            # type of samples returned [cloudy_cloudfree | generic]
     sen12mscrts = SEN12MSCRTS(root, split=split, sample_type=sample_type, n_input_samples=input_t, import_data_path=import_path)
     dataloader  = torch.utils.data.DataLoader(sen12mscrts, batch_size=1, shuffle=False, num_workers=10)
-
+    
     # iterate over split and do some data accessing for demonstration
     for pdx, patch in enumerate(dataloader):
         print(f'Fetching {pdx}. batch of data.')

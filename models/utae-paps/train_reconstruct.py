@@ -11,6 +11,7 @@ out = (1+model(2*x-1, batch_positions=dates).unsqueeze(1))/2
 
 changed --epochs to 200 and --val_after to 100000
 changed --model and --loss and --use_sar (so we can just copy y to x)
+commented out: if step%config.display_step==0: 
 
 indexing [:5 in data loader], shuffle=False in wrapper of loader
 """
@@ -37,8 +38,12 @@ from src.learning.metrics import confusion_matrix_analysis
 from src.learning.weight_init import weight_init
 
 import torchgeometry as tgm
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
+
 sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
 from data.dataLoader import SEN12MSCRTS
+from util.util import LossNetwork, get_perceptual_loss
 from src.learning.metrics import img_metrics, avg_img_metrics
 
 parser = argparse.ArgumentParser()
@@ -79,7 +84,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--experiment_name",
-    default="default",
+    default='dbg', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -94,7 +99,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--display_step",
-    default=50,
+    default=10,
     type=int,
     help="Interval in batches between display of training metrics",
 )
@@ -105,7 +110,7 @@ parser.add_argument(
     help="If specified, the whole dataset is kept in RAM",
 )
 # Training parameters
-parser.add_argument("--epochs", default=200, type=int, help="Number of epochs per fold") ############### TODO
+parser.add_argument("--epochs", default=500, type=int, help="Number of epochs per fold") ############### TODO
 parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
 parser.add_argument("--lr", default=0.01, type=float, help="Learning rate, e.g. 0.001") # TODO
 parser.add_argument("--mono_date", default=None, type=str)
@@ -137,12 +142,12 @@ parser.add_argument(
 parser.add_argument("--input_t", default=4, type=int, help="number of input time points to sample, unet3d needs at least 4 time points")
 parser.add_argument("--sample_type", default="cloudy_cloudfree", type=str, help="type of samples returned [cloudy_cloudfree | generic]")
 parser.add_argument("--root", default='/media/DATA/SEN12MSCRTS', type=str, help="path to your copy of SEN12MS-CR-TS")
-
 parser.add_argument("--region", default="europa", type=str, help="region to (sub-)sample ROI from [all | europa]")
 parser.add_argument("--input_size", default=256, type=int, help="size of input patches to (sub-)sample")
 parser.add_argument("--plot_every", default=1, type=int, help="Interval (in items) of exporting plots at validation or test time.")
-parser.add_argument("--loss", default="ssim", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim].")
-
+parser.add_argument("--loss", default="combined", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined].")
+parser.add_argument("--perceptual", default=os.path.expanduser('~/Documents/models/vgg16_13C.pth'), type=str, help="Path to VGG16 checkpoint, no perceptual loss if passing None")
+parser.add_argument("--layers_perc", default="video", type=str, help="layers to compute perceptual loss over [dip|video|original|experimental]")
 
 list_args = ["encoder_widths", "decoder_widths", "out_conv"]
 parser.set_defaults(cache=False)
@@ -172,6 +177,7 @@ def iterate(
 
     t_start = time.time()
     for i, batch in enumerate(tqdm(data_loader)):
+        step = (epoch-1)*len(data_loader)+i
         if config.sample_type == 'cloudy_cloudfree':
             in_S2 = recursive_todevice(batch['input']['S2'], device)
             in_S2_td = recursive_todevice(batch['input']['S2 TD'], device)
@@ -222,26 +228,37 @@ def iterate(
         else:
             optimizer.zero_grad()
             if torch.isnan(x).sum(): print("DOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO") # TODO
-            #x = y.repeat((1,config.input_t,1,1,1)) # TODO
-            #x = 0.725*torch.ones_like(x, device=device) # TODO
-            #y = 0.725*torch.ones_like(y, device=device) # TODO
+            #x = y.repeat((1,config.input_t,1,1,1)) # TODO setting where input=target patch, just learn identity mapping
+            #x = 0.725*torch.ones_like(x, device=device) # TODO setting where we set input to a constant
+            #y = 0.725*torch.ones_like(y, device=device) # TODO setting where we set target to a constant
             out = model(x, batch_positions=dates).unsqueeze(1)
-            #"""" #TODO
+            #"""" #TODO plotting even at train time
             plot_out = out.detach()
             batch_size = y.size()[0]
             for bdx in range(batch_size):
                 idx = (i*batch_size+bdx) # plot and export every k-th item
                 if idx % config.plot_every == 0:
-                    plot_img(x[bdx], 'in', epoch, mode, file_id=idx)
-                    plot_img(plot_out[bdx], 'pred', epoch, mode, file_id=idx)
-                    plot_img(y[bdx], 'target', epoch, mode, file_id=idx)
+                    plot_img(x[bdx], 'in', epoch, mode, file_id=i)
+                    plot_img(plot_out[bdx], 'pred', epoch, mode, file_id=i)
+                    plot_img(y[bdx], 'target', epoch, mode, file_id=i)
             #""""
 
-        if criterion._get_name()=='SSIM':
-            loss = criterion(out[:,0,...], y[:,0,...])
-        else:
-            loss = criterion(out, y)
+        loss = criterion(out, y)
         if mode == "train":
+            #if step%config.display_step==0: 
+            writer.add_scalar(f'Loss/train/{config.loss}', loss, step)
+            if config.perceptual and config.perceptual!="none": 
+                perceptual = get_perceptual_loss(model.perceptual, out, y) # get_perceptual_loss(net, fake, real)
+                #if step%config.display_step==0: 
+                writer.add_scalar('Loss/train/perceptual', perceptual, step)
+                # rescale perceptual loss prop. to lr
+                loss += 0.1*config.lr*perceptual
+            #if step%config.display_step==0: 
+            writer.add_scalar('Loss/train/total', loss, step)
+            # use add_images for batch-wise adding across temporal dimension
+            writer.add_image('Img/train/in', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
+            writer.add_image('Img/train/out', out[0,0,[3,2,1], ...], step, dataformats='CHW')
+            writer.add_image('Img/train/y', y[0,0,[3,2,1], ...], step, dataformats='CHW')
             loss.backward()
             optimizer.step()
 
@@ -252,6 +269,7 @@ def iterate(
 
         print(f'Prediction min {out.min()}, max {out.max()}, mean {out.mean()}, std {out.std()}. Loss {loss}.') # TODO
 
+        # report training metrics on terminal
         if (i + 1) % config.display_step == 0:
             #miou, acc = iou_meter.get_miou_acc()
             #print("Step [{}/{}], Loss: {:.4f}, Acc : {:.2f}, mIoU {:.2f}".format(
@@ -332,6 +350,7 @@ def overall_performance(config):
 
 
 def main(config):
+    # fix all RNG seeds
     np.random.seed(config.rdm_seed)
     torch.manual_seed(config.rdm_seed)
     prepare_output(config)
@@ -386,6 +405,17 @@ def main(config):
     model = model.to(device)
     model.apply(weight_init)
 
+    # perceptual loss
+    perceptual_layers = {   'dip': [11, 20, 29],
+                            'video': [3, 8, 15],
+                            'original': [3, 8, 15, 22],
+                            'experimental': [8, 15, 22, 29]
+                        }
+
+    if config.perceptual and config.perceptual!="none": 
+        # make the perceptual network a property of the main model, this is a bit ad-hoc
+        model.perceptual = LossNetwork(config.perceptual, perceptual_layers[config.layers_perc], config.device)
+
     # Optimizer and Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
     if config.loss=="l1":
@@ -396,8 +426,17 @@ def main(config):
         criterion = nn.MSELoss()
         best_loss = float("inf")
         is_better = lambda new, prev: new <= prev
-    elif config.loss=="ssim": #  loss is SDSIM: (1-SSIM)/2
+    elif config.loss=="ssim": #  SSIM loss is SDSIM: (1-SSIM)/2
         criterion = tgm.losses.SSIM(5, reduction='mean')
+        # note: ssim can currently only handle 3D (unbatched) or 4D (batched)
+        criterion = lambda pred, targ: criterion(pred[:,0,...], targ[:,0,...])
+        best_loss = float("inf")
+        is_better = lambda new, prev: new <= prev
+    if config.loss=="combined": #  SSIM loss is SDSIM: (1-SSIM)/2
+        # naive 1:1 weighting
+        criterion1 = nn.L1Loss()
+        criterion2 = tgm.losses.SSIM(5, reduction='mean')
+        criterion = lambda pred, targ: criterion1(pred, targ) + criterion2(pred[:,0,...], targ[:,0,...])
         best_loss = float("inf")
         is_better = lambda new, prev: new <= prev
 
@@ -488,6 +527,9 @@ def main(config):
 
     #if config.fold is None:
     #overall_performance(config)
+
+    # close tensorboard logging
+    writer.close()
 
 if __name__ == "__main__":
     config = parser.parse_args()
