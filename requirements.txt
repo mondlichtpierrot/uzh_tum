@@ -1,4 +1,4 @@
-torch~=1.11.0+cu113
+torch~=1.11.0
 torchnet~=0.0.4
 torch_scatter
 numpy~=1.18.5
