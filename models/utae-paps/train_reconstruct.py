@@ -5,16 +5,25 @@ Author: Patrick Ebel (github/PatrickTUM), based on the scripts of
 License: MIT
 """
 
-"""
-out = model(x, batch_positions=dates).unsqueeze(1)
-out = (1+model(2*x-1, batch_positions=dates).unsqueeze(1))/2
+""" TODO: HACKY HARD-CODED CHANGES TO THE SCRIPT FOR DEBUGGING, DEVELOPMENT ETC.
 
-changed --epochs to 200 and --val_after to 100000
-changed --model and --loss and --use_sar (so we can just copy y to x)
-commented out: if step%config.display_step==0: 
+    changed range:
+    out = model(x, batch_positions=dates).unsqueeze(1)
+    out = (1+model(2*x-1, batch_positions=dates).unsqueeze(1))/2
 
-indexing [:5 in data loader], shuffle=False in wrapper of loader
+    flags:
+    changed --epochs to 200 and --val_after to 100000
+    changed --model and --loss and --use_sar (so we can just copy y to x)
+    changed --n_head or --d_model
+
+    commented out: 
+    if step%config.display_step==0: 
+    indexing [:5 in data loader], shuffle=False in wrapper of loader
+
+    call on ScienceCluster via:
+    python train_reconstruct.py --root1 /net/cephfs/home/pebel/scratch/SEN12MSCRTS --root2 /net/cephfs/home/pebel/scratch/SEN12MSCRTS_val_test
 """
+
 import argparse
 import json
 import os
@@ -66,8 +75,8 @@ parser.add_argument("--str_conv_p", default=1, type=int)
 parser.add_argument("--agg_mode", default="att_group", type=str)
 parser.add_argument("--encoder_norm", default="group", type=str)
 parser.add_argument("--decoder_norm", default="group", type=str)
-parser.add_argument("--n_head", default=16, type=int, help="default value of 16, 4 for debugging") # TODO
-parser.add_argument("--d_model", default=256, type=int, help="default value of 256, 64 for debugging") # TODO
+parser.add_argument("--n_head", default=16, type=int, help="default value of 16, 4 for debugging")
+parser.add_argument("--d_model", default=256, type=int, help="default value of 256, 64 for debugging")
 parser.add_argument("--d_k", default=4, type=int)
 
 # Set-up parameters
@@ -84,7 +93,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--experiment_name",
-    default='utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
+    default='utae_S1S2_L1SSIM_europe', #'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -112,7 +121,7 @@ parser.add_argument(
 # Training parameters
 parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold") ############### TODO
 parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
-parser.add_argument("--lr", default=0.01, type=float, help="Learning rate, e.g. 0.001") # TODO
+parser.add_argument("--lr", default=0.005, type=float, help="Learning rate, e.g. 0.001") # TODO
 parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2014-04-03", type=str)
 parser.add_argument(
@@ -133,20 +142,21 @@ parser.add_argument(
 )
 parser.add_argument(
     "--val_after",
-    default=1000000000000000000000000000000000000000000000000000000,
+    default=0,
     type=int,
     help="Do validation only after that many epochs.",
 )
 
 # flags specific to SEN12MS-CR-TS
-parser.add_argument("--input_t", default=4, type=int, help="number of input time points to sample, unet3d needs at least 4 time points")
+parser.add_argument("--input_t", default=5, type=int, help="number of input time points to sample, unet3d needs at least 4 time points")
 parser.add_argument("--sample_type", default="cloudy_cloudfree", type=str, help="type of samples returned [cloudy_cloudfree | generic]")
-parser.add_argument("--root", default='/media/DATA/SEN12MSCRTS', type=str, help="path to your copy of SEN12MS-CR-TS")
+parser.add_argument("--root1", default='/media/DATA/SEN12MSCRTS', type=str, help="path to your copy of SEN12MS-CR-TS")
+parser.add_argument("--root2", default='~/Data/SEN12MSCRTS_val_test', type=str, help="path to your copy of SEN12MS-CR-TS validation & test splits")
 parser.add_argument("--region", default="europa", type=str, help="region to (sub-)sample ROI from [all | europa]")
 parser.add_argument("--input_size", default=256, type=int, help="size of input patches to (sub-)sample")
-parser.add_argument("--plot_every", default=1, type=int, help="Interval (in items) of exporting plots at validation or test time.")
+parser.add_argument("--plot_every", default=-1, type=int, help="Interval (in items) of exporting plots at validation or test time. Set -1 to disable")
 parser.add_argument("--loss", default="combined", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined].")
-parser.add_argument("--perceptual", default=os.path.expanduser('~/Documents/models/vgg16_13C.pth'), type=str, help="Path to VGG16 checkpoint, no perceptual loss if passing None")
+parser.add_argument("--perceptual", default=None, type=str, help="Path to VGG16 checkpoint, no perceptual loss if passing None")
 parser.add_argument("--layers_perc", default="video", type=str, help="layers to compute perceptual loss over [dip|video|original|experimental]")
 
 list_args = ["encoder_widths", "decoder_widths", "out_conv"]
@@ -171,9 +181,10 @@ def plot_img(imgs, mod, epoch, split, file_id=None):
     return img
 
 def iterate(
-    model, data_loader, criterion, config, optimizer=None, mode="train", epoch=None, device=None):
+    model, data_loader, criterion, config, optim=None, mode="train", epoch=None, device=None):
     loss_meter = tnt.meter.AverageValueMeter()
     img_meter = avg_img_metrics()
+    optimizer, scheduler = (None, None) if not optim else optim[0], optim[1]
 
     t_start = time.time()
     for i, batch in enumerate(tqdm(data_loader)):
@@ -220,24 +231,25 @@ def iterate(
                     extended_metrics = img_metrics(y[bdx], out[bdx], in_m[bdx])
                     img_meter.add(extended_metrics)
                     idx = (i*batch_size+bdx) # plot and export every k-th item
-                    if idx % config.plot_every == 0:
+                    if config.plot_every>0 and idx % config.plot_every == 0:
                         plot_img(x[bdx], 'in', epoch, mode, file_id=idx)
                         plot_img(out[bdx], 'pred', epoch, mode, file_id=idx)
-                        plot_img(y[bdx], 'target', epoch, mode, file_id=idx)
-                        
+                        plot_img(y[bdx], 'target', epoch, mode, file_id=idx)                        
         else:
             optimizer.zero_grad()
-            if torch.isnan(x).sum(): print("DOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO") # TODO
+            
+            if torch.isnan(x).sum(): print("Warning: NaN encountered") # TODO
             #x = y.repeat((1,config.input_t,1,1,1)) # TODO setting where input=target patch, just learn identity mapping
             #x = 0.725*torch.ones_like(x, device=device) # TODO setting where we set input to a constant
             #y = 0.725*torch.ones_like(y, device=device) # TODO setting where we set target to a constant
+
             out = model(x, batch_positions=dates).unsqueeze(1)
             #"""" #TODO plotting even at train time
             plot_out = out.detach()
             batch_size = y.size()[0]
             for bdx in range(batch_size):
                 idx = (i*batch_size+bdx) # plot and export every k-th item
-                if idx % config.plot_every == 0:
+                if config.plot_every>0 and idx % config.plot_every == 0:
                     plot_img(x[bdx], 'in', epoch, mode, file_id=i)
                     plot_img(plot_out[bdx], 'pred', epoch, mode, file_id=i)
                     plot_img(y[bdx], 'target', epoch, mode, file_id=i)
@@ -245,24 +257,23 @@ def iterate(
 
         loss = criterion(out, y)
         if mode == "train":
-            #if step%config.display_step==0: 
-            writer.add_scalar(f'Loss/train/{config.loss}', loss, step)
-            if config.perceptual and config.perceptual!="none": 
-                perceptual = get_perceptual_loss(model.perceptual, out, y) # get_perceptual_loss(net, fake, real)
-                #if step%config.display_step==0: 
-                writer.add_scalar('Loss/train/perceptual', perceptual, step)
-                # rescale perceptual loss prop. to lr
-                loss += 1*config.lr*perceptual
-            #if step%config.display_step==0: 
-            writer.add_scalar('Loss/train/total', loss, step)
-            # use add_images for batch-wise adding across temporal dimension
-            if config.use_sar:
-                writer.add_image('Img/train/in_s1', x[0,:,[0], ...], step, dataformats='NCHW')
-                writer.add_image('Img/train/in_s2', x[0,:,[5,4,3], ...], step, dataformats='NCHW')
-            else:
-                writer.add_image('Img/train/in_s2', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
-            writer.add_image('Img/train/out', out[0,0,[3,2,1], ...], step, dataformats='CHW')
-            writer.add_image('Img/train/y', y[0,0,[3,2,1], ...], step, dataformats='CHW')
+            if step%config.display_step==0: 
+                writer.add_scalar(f'Loss/train/{config.loss}', loss, step)
+            if config.perceptual and config.perceptual not in ["none", "None"]: 
+                perceptual = get_perceptual_loss(model.perceptual, out, y)
+                if step%config.display_step==0: 
+                    writer.add_scalar('Loss/train/perceptual', perceptual, step)
+                loss += 1*perceptual # add perceptual loss, eventually rescale
+            if step%config.display_step==0: 
+                writer.add_scalar('Loss/train/total', loss, step)
+                # use add_images for batch-wise adding across temporal dimension
+                if config.use_sar:
+                    writer.add_image('Img/train/in_s1', x[0,:,[0], ...], step, dataformats='NCHW')
+                    writer.add_image('Img/train/in_s2', x[0,:,[5,4,3], ...], step, dataformats='NCHW')
+                else:
+                    writer.add_image('Img/train/in_s2', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
+                writer.add_image('Img/train/out', out[0,0,[3,2,1], ...], step, dataformats='CHW')
+                writer.add_image('Img/train/y', y[0,0,[3,2,1], ...], step, dataformats='CHW')
             loss.backward()
             optimizer.step()
 
@@ -281,6 +292,11 @@ def iterate(
             print("Step [{}/{}], Loss: {:.4f}".format(
                     i + 1, len(data_loader), loss_meter.value()[0]))
 
+    if mode == "train": # after each epoch, update lr acc. to scheduler
+        current_lr = optimizer.state_dict()['param_groups'][0]['lr']
+        writer.add_scalar('Etc/train/lr', current_lr, step)
+        scheduler.step()
+
     t_end = time.time()
     total_time = t_end - t_start
     print("Epoch time : {:.1f}s".format(total_time))
@@ -293,8 +309,16 @@ def iterate(
     }
 
     if mode == "test" or mode == "val":
-        #for keys, vals in extended_metrics.items():
-        #    metrics[f"{mode}_{keys}"] = vals
+        for key, val in img_meter.value().items():
+            writer.add_scalar(f'Loss/{mode}/{key}', val, step)
+        # use add_images for batch-wise adding across temporal dimension
+        if config.use_sar:
+            writer.add_image(f'Img/{mode}/in_s1', x[0,:,[0], ...], step, dataformats='NCHW')
+            writer.add_image(f'Img/{mode}/in_s2', x[0,:,[5,4,3], ...], step, dataformats='NCHW')
+        else:
+            writer.add_image(f'Img/{mode}/in_s2', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
+        writer.add_image(f'Img/{mode}/out', out[0,0,[3,2,1], ...], step, dataformats='CHW')
+        writer.add_image(f'Img/{mode}/y', y[0,0,[3,2,1], ...], step, dataformats='CHW')
         return metrics, img_meter.value() #, iou_meter.conf_metric.value()  # confusion matrix
     else:
         return metrics
@@ -364,15 +388,15 @@ def main(config):
 
     # define data sets
     fold        = 0 # n-fold cross-val may be to cumbersome for SEN12MSCRTS, hardcoding this var for now to avoid breaking downstream code
-    dt_train    = SEN12MSCRTS(os.path.expanduser(config.root), split='train', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None)
-    dt_val      = SEN12MSCRTS(os.path.expanduser('~/Data/SEN12MSCR_val_test'), split='val', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None) 
-    dt_test     = SEN12MSCRTS(os.path.expanduser('~/Data/SEN12MSCR_val_test'), split='test', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None)
+    dt_train    = SEN12MSCRTS(os.path.expanduser(config.root1), split='train', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None)
+    dt_val      = SEN12MSCRTS(os.path.expanduser(config.root2), split='val', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None) 
+    dt_test     = SEN12MSCRTS(os.path.expanduser(config.root2), split='test', region=config.region, sample_type=config.sample_type , n_input_samples=config.input_t, import_data_path=None)
 
     collate_fn = lambda x: utils.pad_collate(x, pad_value=config.pad_value) # padding across batch elements
     train_loader = data.DataLoader(
         dt_train,
         batch_size=config.batch_size,
-        shuffle=False,############################################################True,
+        shuffle=True,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -416,12 +440,15 @@ def main(config):
                             'experimental': [8, 15, 22, 29]
                         }
 
-    if config.perceptual and config.perceptual!="none": 
+    if config.perceptual and config.perceptual not in ["none", "None"]: 
         # make the perceptual network a property of the main model, this is a bit ad-hoc
         model.perceptual = LossNetwork(config.perceptual, perceptual_layers[config.layers_perc], config.device)
 
     # Optimizer and Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+    # TODO: pick a nicer schedule plx, see https://pytorch.org/docs/stable/optim.html
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+
     if config.loss=="l1":
         criterion = nn.L1Loss()
         best_loss = float("inf")
@@ -455,7 +482,7 @@ def main(config):
             data_loader=train_loader,
             criterion=criterion,
             config=config,
-            optimizer=optimizer,
+            optim=(optimizer, scheduler),
             mode="train",
             epoch=epoch,
             device=device,
@@ -469,7 +496,7 @@ def main(config):
                                             data_loader=val_loader,
                                             criterion=criterion,
                                             config=config,
-                                            optimizer=optimizer,
+                                            optim=(optimizer, scheduler),
                                             mode="val",
                                             epoch=epoch,
                                             device=device,
@@ -515,7 +542,7 @@ def main(config):
                                     data_loader=test_loader,
                                     criterion=criterion,
                                     config=config,
-                                    optimizer=optimizer,
+                                    optim=(optimizer, scheduler),
                                     mode="test",
                                     epoch=epoch,
                                     device=device,
