@@ -9,3 +9,4 @@ matplotlib~=3.5.2
 rasterio~=1.2.10
 torchgeometry~=0.1.2
 s2cloudless~=1.6.0
+natsort
