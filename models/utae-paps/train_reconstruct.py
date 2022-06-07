@@ -55,6 +55,9 @@ from data.dataLoader import SEN12MSCRTS
 from util.util import LossNetwork, get_perceptual_loss
 from src.learning.metrics import img_metrics, avg_img_metrics
 
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.getcwd())), "util", "covweighting"))
+from util.covweighting.losses.simplecovweighting_loss import SimpleCoVWeightingLoss
+
 parser = argparse.ArgumentParser()
 # Model parameters
 parser.add_argument(
@@ -155,9 +158,14 @@ parser.add_argument("--root2", default='~/Data/SEN12MSCRTS_val_test', type=str, 
 parser.add_argument("--region", default="europa", type=str, help="region to (sub-)sample ROI from [all | europa]")
 parser.add_argument("--input_size", default=256, type=int, help="size of input patches to (sub-)sample")
 parser.add_argument("--plot_every", default=-1, type=int, help="Interval (in items) of exporting plots at validation or test time. Set -1 to disable")
-parser.add_argument("--loss", default="combined", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined].")
+parser.add_argument("--loss", default="combined", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined|covweighting].")
 parser.add_argument("--perceptual", default=None, type=str, help="Path to VGG16 checkpoint, no perceptual loss if passing None")
 parser.add_argument("--layers_perc", default="video", type=str, help="layers to compute perceptual loss over [dip|video|original|experimental]")
+
+# flags specific to loss weighting
+parser.add_argument("--mean_sort", default='full', type=str, help="cov weighting [full|decay]")
+parser.add_argument("--mean_decay_param", default=1.0, type=float, help="What decay to use with mean decay")
+
 
 list_args = ["encoder_widths", "decoder_widths", "out_conv"]
 parser.set_defaults(cache=False)
@@ -255,7 +263,10 @@ def iterate(
                     plot_img(y[bdx], 'target', epoch, mode, file_id=i)
             #""""
 
-        loss = criterion(out, y)
+        if config.loss in ["covweighting"]:
+            loss = SimpleCoVWeightingLoss.forward(out, y)
+        else: loss = criterion(out, y)
+
         if mode == "train":
             if step%config.display_step==0: 
                 writer.add_scalar(f'Loss/train/{config.loss}', loss, step)
@@ -397,6 +408,7 @@ def main(config):
         dt_train,
         batch_size=config.batch_size,
         shuffle=True,
+        num_workers=config.num_workers,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -404,6 +416,7 @@ def main(config):
         dt_val,
         batch_size=config.batch_size,
         shuffle=False,
+        num_workers=config.num_workers,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -411,6 +424,7 @@ def main(config):
         dt_test,
         batch_size=config.batch_size,
         shuffle=False,
+        num_workers=config.num_workers,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -451,25 +465,22 @@ def main(config):
 
     if config.loss=="l1":
         criterion = nn.L1Loss()
-        best_loss = float("inf")
-        is_better = lambda new, prev: new <= prev
     elif config.loss=="l2":
         criterion = nn.MSELoss()
-        best_loss = float("inf")
-        is_better = lambda new, prev: new <= prev
     elif config.loss=="ssim": #  SSIM loss is SDSIM: (1-SSIM)/2
-        criterion = tgm.losses.SSIM(5, reduction='mean')
+        criterion1 = tgm.losses.SSIM(5, reduction='mean')
         # note: ssim can currently only handle 3D (unbatched) or 4D (batched)
-        criterion = lambda pred, targ: criterion(pred[:,0,...], targ[:,0,...])
-        best_loss = float("inf")
-        is_better = lambda new, prev: new <= prev
-    if config.loss=="combined": #  SSIM loss is SDSIM: (1-SSIM)/2
+        criterion = lambda pred, targ: criterion1(pred[:,0,...], targ[:,0,...])
+    elif config.loss=="combined": #  SSIM loss is SDSIM: (1-SSIM)/2
         # naive 1:1 weighting
         criterion1 = nn.L1Loss()
         criterion2 = tgm.losses.SSIM(5, reduction='mean')
         criterion = lambda pred, targ: criterion1(pred, targ) + criterion2(pred[:,0,...], targ[:,0,...])
-        best_loss = float("inf")
-        is_better = lambda new, prev: new <= prev
+    elif config.loss=="covweighting":
+        # coefficient of variations weighted loss
+        criterion = SimpleCoVWeightingLoss(config)
+    else: raise NotImplementedError
+    is_better, best_loss = lambda new, prev: new <= prev, float("inf")
 
     # Training loop
     trainlog = {}
@@ -477,6 +488,7 @@ def main(config):
         print("EPOCH {}/{}".format(epoch, config.epochs))
 
         model.train()
+        if config.loss in ["covweighting"]: criterion.to_train()
         train_metrics = iterate(
             model,
             data_loader=train_loader,
@@ -491,6 +503,7 @@ def main(config):
         if epoch % config.val_every == 0 and epoch > config.val_after:
             print("Validation . . . ")
             model.eval()
+            if config.loss in ["covweighting"]: criterion.to_eval()
             val_metrics, val_img_metrics = iterate(
                                             model,
                                             data_loader=val_loader,
@@ -536,6 +549,7 @@ def main(config):
         )["state_dict"]
     )
     model.eval()
+    if config.loss in ["covweighting"]: criterion.to_eval()
 
     test_metrics, test_img_metrics = iterate(
                                     model,
