@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --gres gpu:1
 #SBATCH --cpus-per-task=10
-#SBATCH --time=1-23:59:59
+#SBATCH --time=6-23:59:59
 #SBATCH --output=job.out
 #SBATCH sbatch slurm_submit.sh
 

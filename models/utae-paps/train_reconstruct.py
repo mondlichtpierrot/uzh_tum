@@ -23,6 +23,8 @@ License: MIT
     call on ScienceCluster via:
     python train_reconstruct.py --root1 /net/cephfs/home/pebel/scratch/SEN12MSCRTS --root2 /net/cephfs/home/pebel/scratch/SEN12MSCRTS_val_test
 """
+import cProfile as profile
+import pstats
 
 import argparse
 import json
@@ -48,7 +50,6 @@ from src.learning.weight_init import weight_init
 
 import torchgeometry as tgm
 from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
 from data.dataLoader import SEN12MSCRTS
@@ -96,7 +97,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--experiment_name",
-    default='utae_S1S2_L1SSIM_europe', #'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
+    default='dbg', #'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -122,9 +123,9 @@ parser.add_argument(
     help="If specified, the whole dataset is kept in RAM",
 )
 # Training parameters
-parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold") ############### TODO
+parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold")
 parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
-parser.add_argument("--lr", default=0.005, type=float, help="Learning rate, e.g. 0.001") # TODO
+parser.add_argument("--lr", default=0.001, type=float, help="Learning rate, e.g. 0.001")
 parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2014-04-03", type=str)
 parser.add_argument(
@@ -169,6 +170,18 @@ parser.add_argument("--mean_decay_param", default=1.0, type=float, help="What de
 
 list_args = ["encoder_widths", "decoder_widths", "out_conv"]
 parser.set_defaults(cache=False)
+
+config = parser.parse_args()
+for k, v in vars(config).items():
+    if k in list_args and v is not None:
+        v = v.replace("[", "")
+        v = v.replace("]", "")
+        config.__setattr__(k, list(map(int, v.split(","))))
+pprint.pprint(config)
+
+# instantiate tensorboard logger
+writer = SummaryWriter(os.path.join("runs", config.experiment_name))
+
 
 def plot_img(imgs, mod, epoch, split, file_id=None):
     imgs = imgs.cpu().numpy()
@@ -408,7 +421,7 @@ def main(config):
         dt_train,
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=config.num_workers,
+        #num_workers=config.num_workers,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -416,7 +429,7 @@ def main(config):
         dt_val,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=config.num_workers,
+        #num_workers=config.num_workers,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -424,7 +437,7 @@ def main(config):
         dt_test,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=config.num_workers,
+        #num_workers=config.num_workers,
         #drop_last=True,
         #collate_fn=collate_fn,
     )
@@ -487,6 +500,9 @@ def main(config):
     for epoch in range(1, config.epochs + 1):
         print("EPOCH {}/{}".format(epoch, config.epochs))
 
+        prof = profile.Profile()
+        prof.enable()
+
         model.train()
         if config.loss in ["covweighting"]: criterion.to_train()
         train_metrics = iterate(
@@ -499,6 +515,11 @@ def main(config):
             epoch=epoch,
             device=device,
         )
+
+        prof.disable()
+        stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
+        stats.print_stats(25) # top 10 rows
+        
         # do regular validation steps
         if epoch % config.val_every == 0 and epoch > config.val_after:
             print("Validation . . . ")
@@ -577,17 +598,18 @@ def main(config):
     writer.close()
 
 if __name__ == "__main__":
+    """
     config = parser.parse_args()
     for k, v in vars(config).items():
         if k in list_args and v is not None:
             v = v.replace("[", "")
             v = v.replace("]", "")
             config.__setattr__(k, list(map(int, v.split(","))))
+    pprint.pprint(config)
+    """
 
     # validate input flags
     #assert config.num_classes == config.out_conv[-1]
     isPow2 = lambda x: (x & (x-1) == 0) and x != 0
     assert isPow2(config.input_size) and 0<config.input_size<=256
-
-    pprint.pprint(config)
     main(config)
