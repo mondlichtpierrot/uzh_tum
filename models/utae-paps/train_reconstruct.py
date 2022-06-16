@@ -58,6 +58,7 @@ from src.learning.metrics import img_metrics, avg_img_metrics
 
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.getcwd())), "util", "covweighting"))
 from util.covweighting.losses.simplecovweighting_loss import SimpleCoVWeightingLoss
+from util.covweighting.losses.simpleuncertainty_loss import SimpleUncertaintyLoss
 
 parser = argparse.ArgumentParser()
 # Model parameters
@@ -95,9 +96,9 @@ parser.add_argument(
     default="./results",
     help="Path to the folder where the results should be stored",
 )
-parser.add_argument(
+parser.add_argument(    
     "--experiment_name",
-    default='dbg', #'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
+    default='utae_S1S2_t4_covweightingNoPerceptual_europe', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -125,7 +126,7 @@ parser.add_argument(
 # Training parameters
 parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold")
 parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
-parser.add_argument("--lr", default=0.001, type=float, help="Learning rate, e.g. 0.001")
+parser.add_argument("--lr", default=0.01, type=float, help="Learning rate, e.g. 0.001")
 parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2014-04-03", type=str)
 parser.add_argument(
@@ -152,16 +153,17 @@ parser.add_argument(
 )
 
 # flags specific to SEN12MS-CR-TS
-parser.add_argument("--input_t", default=5, type=int, help="number of input time points to sample, unet3d needs at least 4 time points")
+parser.add_argument("--input_t", default=4, type=int, help="number of input time points to sample, unet3d needs at least 4 time points")
 parser.add_argument("--sample_type", default="cloudy_cloudfree", type=str, help="type of samples returned [cloudy_cloudfree | generic]")
 parser.add_argument("--root1", default='/media/DATA/SEN12MSCRTS', type=str, help="path to your copy of SEN12MS-CR-TS")
 parser.add_argument("--root2", default='~/Data/SEN12MSCRTS_val_test', type=str, help="path to your copy of SEN12MS-CR-TS validation & test splits")
 parser.add_argument("--region", default="europa", type=str, help="region to (sub-)sample ROI from [all | europa]")
 parser.add_argument("--input_size", default=256, type=int, help="size of input patches to (sub-)sample")
 parser.add_argument("--plot_every", default=-1, type=int, help="Interval (in items) of exporting plots at validation or test time. Set -1 to disable")
-parser.add_argument("--loss", default="combined", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined|covweighting].")
-parser.add_argument("--perceptual", default=None, type=str, help="Path to VGG16 checkpoint, no perceptual loss if passing None")
+parser.add_argument("--loss", default="covweighting", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined|covweighting|uncertainty].")
+parser.add_argument("--perceptual", default=os.path.expanduser("~/Documents/models/vgg16_13C.pth"), type=str, help="Path to VGG16 checkpoint, no perceptual loss if passing None")
 parser.add_argument("--layers_perc", default="video", type=str, help="layers to compute perceptual loss over [dip|video|original|experimental]")
+parser.add_argument("--debug", dest="debug", action="store_true", help="whether to debug and profile code or not") 
 
 # flags specific to loss weighting
 parser.add_argument("--mean_sort", default='full', type=str, help="cov weighting [full|decay]")
@@ -276,18 +278,27 @@ def iterate(
                     plot_img(y[bdx], 'target', epoch, mode, file_id=i)
             #""""
 
-        if config.loss in ["covweighting"]:
-            loss = SimpleCoVWeightingLoss.forward(out, y)
+        if config.loss in ["covweighting", "uncertainty"]: 
+            # handle SimpleCoVWeightingLoss separately
+            loss = criterion.forward(out, y)
+            #criterion.running_mean_l
         else: loss = criterion(out, y)
 
         if mode == "train":
             if step%config.display_step==0: 
                 writer.add_scalar(f'Loss/train/{config.loss}', loss, step)
-            if config.perceptual and config.perceptual not in ["none", "None"]: 
+                if config.loss in ["covweighting", "uncertainty"]: 
+                    for idx, alpha in enumerate(criterion.alphas): # individual loss weightings
+                        loss_n  = ["L1","SSIM"]#, "perceptual"]
+                        writer.add_scalar(f'Loss/train/alpha_{loss_n[idx]}', alpha, step)
+                        writer.add_scalar(f'Loss/train/{loss_n[idx]}', criterion.weighted_l[idx], step)
+                    #criterion.running_mean_l, criterion.running_mean_L
+            # separately evaluate perceptual loss, if included
+            if config.perceptual and config.perceptual not in ["none", "None"] and config.loss not in ["covweighting", "uncertainty"]: 
                 perceptual = get_perceptual_loss(model.perceptual, out, y)
                 if step%config.display_step==0: 
                     writer.add_scalar('Loss/train/perceptual', perceptual, step)
-                loss += 1*perceptual # add perceptual loss, eventually rescale
+                loss += 1 *perceptual # add perceptual loss, eventually rescale
             if step%config.display_step==0: 
                 writer.add_scalar('Loss/train/total', loss, step)
                 # use add_images for batch-wise adding across temporal dimension
@@ -301,20 +312,15 @@ def iterate(
             loss.backward()
             optimizer.step()
 
-        #with torch.no_grad():
-        #    pred = out.argmax(dim=1)
-        #iou_meter.add(pred, y)
+        # log the loss
         loss_meter.add(loss.item())
 
         # print(f'Prediction min {out.min()}, max {out.max()}, mean {out.mean()}, std {out.std()}. Loss {loss}.') # TODO
 
         # report training metrics on terminal
-        if (i + 1) % config.display_step == 0:
-            #miou, acc = iou_meter.get_miou_acc()
-            #print("Step [{}/{}], Loss: {:.4f}, Acc : {:.2f}, mIoU {:.2f}".format(
-            #        i + 1, len(data_loader), loss_meter.value()[0], acc, miou))
-            print("Step [{}/{}], Loss: {:.4f}".format(
-                    i + 1, len(data_loader), loss_meter.value()[0]))
+        #if (i + 1) % config.display_step == 0:
+        #    print("Step [{}/{}], Loss: {:.4f}".format(
+        #            i + 1, len(data_loader), loss_meter.value()[0]))
 
     if mode == "train": # after each epoch, update lr acc. to scheduler
         current_lr = optimizer.state_dict()['param_groups'][0]['lr']
@@ -467,7 +473,7 @@ def main(config):
                             'experimental': [8, 15, 22, 29]
                         }
 
-    if config.perceptual and config.perceptual not in ["none", "None"]: 
+    if config.perceptual and config.perceptual not in ["none", "None"] and config.loss not in ["covweighting", "uncertainty"]: 
         # make the perceptual network a property of the main model, this is a bit ad-hoc
         model.perceptual = LossNetwork(config.perceptual, perceptual_layers[config.layers_perc], config.device)
 
@@ -492,6 +498,9 @@ def main(config):
     elif config.loss=="covweighting":
         # coefficient of variations weighted loss
         criterion = SimpleCoVWeightingLoss(config)
+    elif config.loss=="uncertainty":
+        # Kendall et al's uncertainty weighting
+        criterion = SimpleUncertaintyLoss(config)
     else: raise NotImplementedError
     is_better, best_loss = lambda new, prev: new <= prev, float("inf")
 
@@ -500,11 +509,12 @@ def main(config):
     for epoch in range(1, config.epochs + 1):
         print("EPOCH {}/{}".format(epoch, config.epochs))
 
-        prof = profile.Profile()
-        prof.enable()
+        if config.debug:
+            prof = profile.Profile()
+            prof.enable()
 
         model.train()
-        if config.loss in ["covweighting"]: criterion.to_train()
+        if config.loss in ["covweighting", "uncertainty"]: criterion.to_train()
         train_metrics = iterate(
             model,
             data_loader=train_loader,
@@ -516,15 +526,16 @@ def main(config):
             device=device,
         )
 
-        prof.disable()
-        stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
-        stats.print_stats(25) # top 10 rows
+        if config.debug:
+            prof.disable()
+            stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
+            stats.print_stats(25) # top k rows
         
         # do regular validation steps
         if epoch % config.val_every == 0 and epoch > config.val_after:
             print("Validation . . . ")
             model.eval()
-            if config.loss in ["covweighting"]: criterion.to_eval()
+            if config.loss in ["covweighting", "uncertainty"]: criterion.to_eval()
             val_metrics, val_img_metrics = iterate(
                                             model,
                                             data_loader=val_loader,
@@ -570,7 +581,7 @@ def main(config):
         )["state_dict"]
     )
     model.eval()
-    if config.loss in ["covweighting"]: criterion.to_eval()
+    if config.loss in ["covweighting", "uncertainty"]: criterion.to_eval()
 
     test_metrics, test_img_metrics = iterate(
                                     model,

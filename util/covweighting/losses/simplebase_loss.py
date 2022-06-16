@@ -1,3 +1,6 @@
+import os
+import sys
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,6 +9,8 @@ import torchgeometry as tgm
 
 from losses.bilinear_sampler import apply_disparity
 
+sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
+from util.util import LossNetwork, get_perceptual_loss
 
 class SimpleBaseLoss(nn.modules.Module):
 
@@ -17,8 +22,17 @@ class SimpleBaseLoss(nn.modules.Module):
         self.train = False
 
         # Record the weights.
-        self.num_losses = 2 # NUM_LOSSES
+        self.num_losses = 2 #3 # NUM_LOSSES
         self.alphas = torch.zeros((self.num_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+        
+        # perceptual loss
+        perceptual_layers = {   'dip': [11, 20, 29],
+                                'video': [3, 8, 15],
+                                'original': [3, 8, 15, 22],
+                                'experimental': [8, 15, 22, 29]
+                            }
+        
+        self.perceptual = LossNetwork(args.perceptual, perceptual_layers[args.layers_perc], args.device)
 
     @staticmethod
     def scale_pyramid(img, num_scales):
@@ -163,10 +177,16 @@ class SimpleBaseLoss(nn.modules.Module):
         
         return loss
         """
-        
+
+        # 1) L1 loss
+        l1 = nn.L1Loss()
+
+        # 2) SSIM loss
         ssim = tgm.losses.SSIM(5, reduction='mean') # SSIM loss is SDSIM: (1-SSIM)/2
         # note: ssim can currently only handle 3D (unbatched) or 4D (batched)
         ssim_wrap = lambda pred, targ: ssim(pred[:,0,...], targ[:,0,...])
-        l1 = nn.L1Loss()
         
-        return [ssim_wrap, l1]
+        # 3) perceptual loss
+        #perceptual = lambda pred, targ: get_perceptual_loss(self.perceptual, pred, targ)
+
+        return [l1, ssim_wrap]#, perceptual]

@@ -29,9 +29,14 @@ class SimpleCoVWeightingLoss(SimpleBaseLoss):
             self.device)
         self.running_std_l = None
 
+        self.unweighted_l = torch.zeros((self.num_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+        self.weighted_l   = torch.zeros((self.num_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+
     def forward(self, pred, target):
         # Retrieve the unweighted losses.
         unweighted_losses = super(SimpleCoVWeightingLoss, self).forward(pred, target)
+        # TODO: inserted the following line, subsequent codes seem to expected loss outputs
+        unweighted_losses = [loss(pred, target) for loss in unweighted_losses] # [unweighted_losses[0](pred, target), unweighted_losses[1](pred, target)]
         # Put the losses in a list. Just for computing the weights.
         L = torch.tensor(unweighted_losses, requires_grad=False).to(self.device)
 
@@ -81,6 +86,8 @@ class SimpleCoVWeightingLoss(SimpleBaseLoss):
         self.running_mean_L = mean_param * self.running_mean_L + (1 - mean_param) * x_L
 
         # Get the weighted losses and perform a standard back-pass.
-        weighted_losses = [self.alphas[i] * unweighted_losses[i] for i in range(len(unweighted_losses))]
+        weighted_losses   = [self.alphas[i] * unweighted_losses[i] for i in range(len(unweighted_losses))]
+        self.unweighted_l = unweighted_losses
+        self.weighted_l   = weighted_losses
         loss = sum(weighted_losses)
         return loss

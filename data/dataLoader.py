@@ -297,7 +297,7 @@ class SEN12MSCRTS(Dataset):
                     if os.path.isdir(self.export_data_path):
                         export_here = os.path.join(self.export_data_path, f'{self.n_input_t}_{self.split}_{self.cloud_masks}.npy')
                     else:
-                        export_here = export_data_path
+                        export_here = self.export_data_path
                     np.save(export_here, self.data_pairs)
 
             sample = {'input': {'S1': list(input_s1),
