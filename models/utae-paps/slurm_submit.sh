@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --gres gpu:1
 #SBATCH --cpus-per-task=8
+#SBATCH --mem=15000
 #SBATCH --time=6-23:59:59
 #SBATCH --output=job.out
 
