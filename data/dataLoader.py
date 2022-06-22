@@ -40,10 +40,10 @@ class SEN12MSCRTS(Dataset):
         
         self.root_dir = root   # set root directory which contains all ROI
         self.region   = region # region according to which the ROI are selected
-        self.ROI            = {'ROIs1158': ['106'],
-                               'ROIs1868': ['17', '36', '56', '73', '85', '100', '114', '119', '121', '126', '127', '139', '142', '143'],
-                               'ROIs1970': ['20', '21', '35', '40', '57', '65', '71', '82', '83', '91', '112', '116', '119', '128', '132', '133', '135', '139', '142', '144', '149'],
-                               'ROIs2017': ['8', '22', '25', '32', '49', '61', '63', '69', '75', '103', '108', '115', '116', '117', '130', '140', '146']}
+        self.ROI      = {'ROIs1158': ['106'],
+                         'ROIs1868': ['17', '36', '56', '73', '85', '100', '114', '119', '121', '126', '127', '139', '142', '143'],
+                         'ROIs1970': ['20', '21', '35', '40', '57', '65', '71', '82', '83', '91', '112', '116', '119', '128', '132', '133', '135', '139', '142', '144', '149'],
+                         'ROIs2017': ['8', '22', '25', '32', '49', '61', '63', '69', '75', '103', '108', '115', '116', '117', '130', '140', '146']}
         
         # define splits conform with SEN12MS-CR
         self.splits         = {}
@@ -112,7 +112,7 @@ class SEN12MSCRTS(Dataset):
             self.data_pairs = np.load(import_here, allow_pickle=True).item()
             print(f'Importing data pairings for split {self.split} from {import_here}.')
 
-        self.paths          = self.get_paths()#[:1000] ############## TODO: for debugging
+        self.paths          = self.get_paths()[:20] ############## TODO: for debugging
         self.n_samples      = len(self.paths)
 
         # raise a warning that no data has been found

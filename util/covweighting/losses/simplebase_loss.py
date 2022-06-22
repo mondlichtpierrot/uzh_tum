@@ -10,7 +10,7 @@ import torchgeometry as tgm
 from losses.bilinear_sampler import apply_disparity
 
 sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
-from util.util import LossNetwork, get_perceptual_loss
+from util.utils import LossNetwork, get_perceptual_loss
 
 class SimpleBaseLoss(nn.modules.Module):
 

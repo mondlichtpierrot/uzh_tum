@@ -5,7 +5,10 @@ import numpy as np
 import pandas as pd
 
 from src.learning.miou import Metric
+sys.path.append(os.path.dirname(os.getcwd()))
 sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
+#print(os.path.dirname(os.path.dirname(os.getcwd())))
+#exit()
 from util import pytorch_ssim
 
 def mIou(y_true, y_pred, n_classes):

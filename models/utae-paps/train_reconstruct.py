@@ -23,6 +23,7 @@ License: MIT
     call on ScienceCluster via:
     python train_reconstruct.py --root1 /net/cephfs/home/pebel/scratch/SEN12MSCRTS --root2 /net/cephfs/home/pebel/scratch/SEN12MSCRTS_val_test
 """
+
 import cProfile as profile
 import pstats
 
@@ -53,10 +54,12 @@ from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append(os.path.dirname(os.path.dirname(os.getcwd())))
 from data.dataLoader import SEN12MSCRTS
-from util.util import LossNetwork, get_perceptual_loss
+from util.utils import LossNetwork, get_perceptual_loss
 from src.learning.metrics import img_metrics, avg_img_metrics
 
+#sys.path.append(os.path.join(os.path.dirname(os.getcwd()), "util", "covweighting"))
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.getcwd())), "util", "covweighting"))
+#sys.path.append(os.path.join(os.path.dirname(os.getcwd()), "util", "covweighting"))
 from util.covweighting.losses.simplecovweighting_loss import SimpleCoVWeightingLoss
 from util.covweighting.losses.simpleuncertainty_loss import SimpleUncertaintyLoss
 
@@ -86,19 +89,13 @@ parser.add_argument("--d_k", default=4, type=int)
 
 # Set-up parameters
 parser.add_argument(
-    "--dataset_folder",
-    default="",
-    type=str,
-    help="Path to the folder where the results are saved.",
-)
-parser.add_argument(
     "--res_dir",
     default="./results",
     help="Path to the folder where the results should be stored",
 )
 parser.add_argument(    
     "--experiment_name",
-    default='utae_S1S2_t4_covweightingNoPerceptual_europe', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
+    default='testi',#'utae_S1S2_t4_covweightingNoPerceptual_europe', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -203,16 +200,80 @@ def plot_img(imgs, mod, epoch, split, file_id=None):
             plt.imsave(os.path.join(plot_dir, f'img-{file_id}_{mod}_t-{tdx}.png'), np.moveaxis(img,0,-1), dpi=10)
     return img
 
+# TODO: IN: batch, device; OUT: x, y, in_m, dates
+def prepare_data(batch, device, config):
+    in_S2 = recursive_todevice(batch['input']['S2'], device)
+    in_S2_td = recursive_todevice(batch['input']['S2 TD'], device)
+    if config.batch_size>1: in_S2_td = torch.stack((in_S2_td)).T
+    in_m  = torch.stack(recursive_todevice(batch['input']['masks'], device)).swapaxes(0,1)
+    #target_S1 = recursive_todevice(batch['target']['S1'], device)
+    target_S2 = recursive_todevice(batch['target']['S2'], device)
+    #target_S1_td = recursive_todevice(batch['target']['S1 TD'], device)
+    #target_S2_td = recursive_todevice(batch['target']['S2 TD'], device)
+    #target_m  = recursive_todevice(batch['target']['masks'], device)
+    y     = torch.cat(target_S2,dim=0).unsqueeze(1)
+
+    if config.use_sar: 
+        in_S1 = recursive_todevice(batch['input']['S1'], device)
+        in_S1_td = recursive_todevice(batch['input']['S1 TD'], device)
+        if config.batch_size>1: in_S1_td = torch.stack((in_S1_td)).T
+        x     = torch.cat((torch.stack(in_S1,dim=1), torch.stack(in_S2,dim=1)),dim=2)
+        dates = torch.stack((torch.tensor(in_S1_td),torch.tensor(in_S2_td))).float().mean(dim=0).to(device)
+    else:
+        x     = torch.stack(in_S2,dim=1)
+        dates = torch.tensor(in_S2_td).float().to(device)
+
+    if config.input_size < 256: # batch sub-samples if mosaicing patches
+        x_mosaic = x.unfold(4, config.input_size, config.input_size).unfold(3, config.input_size, config.input_size)
+        x_batch  = x_mosaic.reshape(-1, config.input_t, x.shape[2], config.input_size, config.input_size).swapaxes(-1,-2)
+        y_mosaic = y.unfold(4, config.input_size, config.input_size).unfold(3, config.input_size, config.input_size)
+        y_batch  = y_mosaic.reshape(-1, 1, y.shape[2], config.input_size, config.input_size).swapaxes(-1,-2)
+        m_mosaic = in_m.unfold(3, config.input_size, config.input_size).unfold(2, config.input_size, config.input_size)
+        m_batch  = m_mosaic.reshape(-1, config.input_t, config.input_size, config.input_size).swapaxes(-1,-2)
+
+        x, y, in_m, dates = x_batch, y_batch, m_batch, dates.expand(x_batch.shape[0],-1)
+    return x, y, in_m, dates
+
+def get_loss(config):
+    if config.loss=="l1":
+        criterion = nn.L1Loss()
+    elif config.loss=="l2":
+        criterion = nn.MSELoss()
+    elif config.loss=="ssim": #  SSIM loss is SDSIM: (1-SSIM)/2
+        criterion1 = tgm.losses.SSIM(5, reduction='mean')
+        # note: ssim can currently only handle 3D (unbatched) or 4D (batched)
+        criterion = lambda pred, targ: criterion1(pred[:,0,...], targ[:,0,...])
+    elif config.loss=="combined": #  SSIM loss is SDSIM: (1-SSIM)/2
+        # naive 1:1 weighting
+        criterion1 = nn.L1Loss()
+        criterion2 = tgm.losses.SSIM(5, reduction='mean')
+        criterion = lambda pred, targ: criterion1(pred, targ) + criterion2(pred[:,0,...], targ[:,0,...])
+    elif config.loss=="covweighting":
+        # coefficient of variations weighted loss
+        criterion = SimpleCoVWeightingLoss(config)
+    elif config.loss=="uncertainty":
+        # Kendall et al's uncertainty weighting
+        criterion = SimpleUncertaintyLoss(config)
+    else: raise NotImplementedError
+    return criterion
+
 def iterate(
     model, data_loader, criterion, config, optim=None, mode="train", epoch=None, device=None):
     loss_meter = tnt.meter.AverageValueMeter()
-    img_meter = avg_img_metrics()
-    optimizer, scheduler = (None, None) if not optim else optim[0], optim[1]
+    img_meter  = avg_img_metrics()
+    if not optim:
+        optimizer, scheduler = (None, None)
+    else:
+        optimizer, scheduler = optim[0], optim[1]
 
     t_start = time.time()
     for i, batch in enumerate(tqdm(data_loader)):
         step = (epoch-1)*len(data_loader)+i
+
         if config.sample_type == 'cloudy_cloudfree':
+            # TODO: IN: batch, device; OUT: x, y, in_m, dates
+            x, y, in_m, dates = prepare_data(batch, device, config)
+            """
             in_S2 = recursive_todevice(batch['input']['S2'], device)
             in_S2_td = recursive_todevice(batch['input']['S2 TD'], device)
             if config.batch_size>1: in_S2_td = torch.stack((in_S2_td)).T
@@ -243,6 +304,7 @@ def iterate(
                 m_batch  = m_mosaic.reshape(-1, config.input_t, config.input_size, config.input_size).swapaxes(-1,-2)
 
                 x, y, in_m, dates = x_batch, y_batch, m_batch, dates.expand(x_batch.shape[0],-1)
+            """
 
         else: raise NotImplementedError
 
@@ -281,7 +343,6 @@ def iterate(
         if config.loss in ["covweighting", "uncertainty"]: 
             # handle SimpleCoVWeightingLoss separately
             loss = criterion.forward(out, y)
-            #criterion.running_mean_l
         else: loss = criterion(out, y)
 
         if mode == "train":
@@ -315,13 +376,6 @@ def iterate(
         # log the loss
         loss_meter.add(loss.item())
 
-        # print(f'Prediction min {out.min()}, max {out.max()}, mean {out.mean()}, std {out.std()}. Loss {loss}.') # TODO
-
-        # report training metrics on terminal
-        #if (i + 1) % config.display_step == 0:
-        #    print("Step [{}/{}], Loss: {:.4f}".format(
-        #            i + 1, len(data_loader), loss_meter.value()[0]))
-
     if mode == "train": # after each epoch, update lr acc. to scheduler
         current_lr = optimizer.state_dict()['param_groups'][0]['lr']
         writer.add_scalar('Etc/train/lr', current_lr, step)
@@ -330,11 +384,8 @@ def iterate(
     t_end = time.time()
     total_time = t_end - t_start
     print("Epoch time : {:.1f}s".format(total_time))
-    #miou, acc = iou_meter.get_miou_acc()
     metrics = {
-        #"{}_accuracy".format(mode): acc,
         "{}_loss".format(mode): loss_meter.value()[0],
-        #"{}_IoU".format(mode): miou,
         "{}_epoch_time".format(mode): total_time,
     }
 
@@ -349,7 +400,7 @@ def iterate(
             writer.add_image(f'Img/{mode}/in_s2', x[0,:,[3,2,1], ...], step, dataformats='NCHW')
         writer.add_image(f'Img/{mode}/out', out[0,0,[3,2,1], ...], step, dataformats='CHW')
         writer.add_image(f'Img/{mode}/y', y[0,0,[3,2,1], ...], step, dataformats='CHW')
-        return metrics, img_meter.value() #, iou_meter.conf_metric.value()  # confusion matrix
+        return metrics, img_meter.value()
     else:
         return metrics
 
@@ -365,20 +416,22 @@ def recursive_todevice(x, device):
 
 def prepare_output(config):
     os.makedirs(os.path.join(config.res_dir, config.experiment_name), exist_ok=True)
-    for fold in range(1, 6):
-        os.makedirs(os.path.join(config.res_dir, config.experiment_name, "Fold_{}".format(fold)), exist_ok=True)
+    #for fold in range(1, 6):
+    #    os.makedirs(os.path.join(config.res_dir, config.experiment_name, "Fold_{}".format(fold)), exist_ok=True)
 
 
 def checkpoint(fold, log, config):
     with open(
-        os.path.join(config.res_dir, config.experiment_name, "Fold_{}".format(fold), "trainlog.json"), "w"
+        #os.path.join(config.res_dir, config.experiment_name, "Fold_{}".format(fold), "trainlog.json"), "w"
+        os.path.join(config.res_dir, config.experiment_name, "trainlog.json"), "w"
     ) as outfile:
         json.dump(log, outfile, indent=4)
 
 
 def save_results(fold, metrics, config):
     with open(
-        os.path.join(config.res_dir, config.experiment_name, "Fold_{}".format(fold), "test_metrics.json"), "w"
+        #os.path.join(config.res_dir, config.experiment_name, "Fold_{}".format(fold), "test_metrics.json"), "w"
+        os.path.join(config.res_dir, config.experiment_name, "test_metrics.json"), "w"
     ) as outfile:
         json.dump(metrics, outfile, indent=4)
 
@@ -482,26 +535,7 @@ def main(config):
     # TODO: pick a nicer schedule plx, see https://pytorch.org/docs/stable/optim.html
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
 
-    if config.loss=="l1":
-        criterion = nn.L1Loss()
-    elif config.loss=="l2":
-        criterion = nn.MSELoss()
-    elif config.loss=="ssim": #  SSIM loss is SDSIM: (1-SSIM)/2
-        criterion1 = tgm.losses.SSIM(5, reduction='mean')
-        # note: ssim can currently only handle 3D (unbatched) or 4D (batched)
-        criterion = lambda pred, targ: criterion1(pred[:,0,...], targ[:,0,...])
-    elif config.loss=="combined": #  SSIM loss is SDSIM: (1-SSIM)/2
-        # naive 1:1 weighting
-        criterion1 = nn.L1Loss()
-        criterion2 = tgm.losses.SSIM(5, reduction='mean')
-        criterion = lambda pred, targ: criterion1(pred, targ) + criterion2(pred[:,0,...], targ[:,0,...])
-    elif config.loss=="covweighting":
-        # coefficient of variations weighted loss
-        criterion = SimpleCoVWeightingLoss(config)
-    elif config.loss=="uncertainty":
-        # Kendall et al's uncertainty weighting
-        criterion = SimpleUncertaintyLoss(config)
-    else: raise NotImplementedError
+    criterion = get_loss(config)
     is_better, best_loss = lambda new, prev: new <= prev, float("inf")
 
     # Training loop
@@ -548,10 +582,7 @@ def main(config):
                                         )
 
             print(f'Loss {val_metrics["val_loss"]}')
-            print(f' validation image metrics: {val_img_metrics}')
-            #val_metrics["val_loss"],
-            #val_metrics["val_accuracy"],
-            #val_metrics["best_loss"],
+            print(f'validation image metrics: {val_img_metrics}')
 
             trainlog[epoch] = {**train_metrics, **val_metrics}
             checkpoint(fold+1, trainlog, config)
@@ -564,7 +595,8 @@ def main(config):
                         "optimizer": optimizer.state_dict(),
                     },
                     os.path.join(
-                        config.res_dir, config.experiment_name, "Fold_{}".format(fold + 1), "model.pth.tar"
+                        #config.res_dir, config.experiment_name, "Fold_{}".format(fold + 1), "model.pth.tar"
+                        config.res_dir, config.experiment_name, "model.pth.tar"
                     ),
                 )
         else:
@@ -576,7 +608,8 @@ def main(config):
     model.load_state_dict(
         torch.load(
             os.path.join(
-                config.res_dir, config.experiment_name, "Fold_{}".format(fold + 1), "model.pth.tar"
+                #config.res_dir, config.experiment_name, "Fold_{}".format(fold + 1), "model.pth.tar"
+                config.res_dir, config.experiment_name, "model.pth.tar"
             )
         )["state_dict"]
     )
@@ -595,11 +628,6 @@ def main(config):
                                 )
     print(f'Loss {test_metrics["test_loss"]}')
     print(f' test image metrics: {test_img_metrics}')
-    #"Loss {:.4f},  Acc {:.2f},  IoU {:.4f}".format(
-        #test_metrics["test_loss"],
-        #test_metrics["test_accuracy"],
-        #test_metrics["test_IoU"],
-    #))
     save_results(fold + 1, test_metrics, config)
 
     #if config.fold is None:

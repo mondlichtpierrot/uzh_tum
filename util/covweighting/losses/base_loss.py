@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from losses.bilinear_sampler import apply_disparity
 from config import NUM_LOSSES
 
