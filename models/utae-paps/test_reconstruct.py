@@ -35,7 +35,7 @@ parser.add_argument(
 )
 parser.add_argument(    
     "--experiment_name",
-    default='utae_S1S2_t4_covweightingNoPerceptual_europe', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
+    default='utae_S1S2_t5_L1SSIM_all', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
@@ -65,7 +65,7 @@ parser.add_argument("--input_t", default=4, type=int, help="number of input time
 parser.add_argument("--sample_type", default="cloudy_cloudfree", type=str, help="type of samples returned [cloudy_cloudfree | generic]")
 parser.add_argument("--root1", default='/media/DATA/SEN12MSCRTS', type=str, help="path to your copy of SEN12MS-CR-TS")
 parser.add_argument("--root2", default='~/Data/SEN12MSCRTS_val_test', type=str, help="path to your copy of SEN12MS-CR-TS validation & test splits")
-parser.add_argument("--region", default="europa", type=str, help="region to (sub-)sample ROI from [all | europa]")
+parser.add_argument("--region", default="all", type=str, help="region to (sub-)sample ROI from [all | europa]")
 parser.add_argument("--input_size", default=256, type=int, help="size of input patches to (sub-)sample")
 parser.add_argument("--plot_every", default=-1, type=int, help="Interval (in items) of exporting plots at validation or test time. Set -1 to disable")
 parser.add_argument("--loss", default="combined", type=str, help="Image reconstruction loss to utilize [l1|l2|ssim|combined|covweighting|uncertainty].")
@@ -134,7 +134,8 @@ def main(config):
 
     # Load weights
     sd = torch.load(
-        os.path.join(config.weight_folder, config.experiment_name, "Fold_{}".format(fold+1), "model.pth.tar"),
+        #os.path.join(config.weight_folder, config.experiment_name, "Fold_{}".format(fold+1), "model.pth.tar"),
+        os.path.join(config.weight_folder, config.experiment_name, "model.pth.tar"),
         map_location=device,
     )
     model.load_state_dict(sd["state_dict"])

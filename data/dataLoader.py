@@ -112,7 +112,7 @@ class SEN12MSCRTS(Dataset):
             self.data_pairs = np.load(import_here, allow_pickle=True).item()
             print(f'Importing data pairings for split {self.split} from {import_here}.')
 
-        self.paths          = self.get_paths()[:20] ############## TODO: for debugging
+        self.paths          = self.get_paths()#[:20] ############## TODO: for debugging
         self.n_samples      = len(self.paths)
 
         # raise a warning that no data has been found
@@ -305,15 +305,18 @@ class SEN12MSCRTS(Dataset):
                                 'masks': list(input_masks),
                                 'coverage': [np.mean(mask) for mask in input_masks],
                                 'S1 TD': [s1_td[idx] for idx in inputs_idx],
-                                'S2 TD': [s2_td[idx] for idx in inputs_idx]
+                                'S2 TD': [s2_td[idx] for idx in inputs_idx],
+                                'S1_path': [os.path.join(self.root_dir, self.paths[pdx]['S1'][idx]) for idx in inputs_idx],
+                                'S2_path': [os.path.join(self.root_dir, self.paths[pdx]['S2'][idx]) for idx in inputs_idx],
                                 },
                       'target': {'S1': [target_s1],
                                  'S2': [self.process_MS(target_s2, self.method)],
-                                 'S2_path': os.path.join(self.root_dir, self.paths[pdx]['S2'][cloudless_idx]),
                                  'masks': [target_mask],
                                  'coverage': [np.mean(target_mask)],
-                                'S1 TD': [s1_td[cloudless_idx]],
-                                'S2 TD': [s2_td[cloudless_idx]]
+                                 'S1 TD': [s1_td[cloudless_idx]],
+                                 'S2 TD': [s2_td[cloudless_idx]],
+                                 'S1_path': [os.path.join(self.root_dir, self.paths[pdx]['S1'][cloudless_idx])],
+                                 'S2_path': [os.path.join(self.root_dir, self.paths[pdx]['S2'][cloudless_idx])],
                                  },
                        'coverage_bin': coverage_match
                       }

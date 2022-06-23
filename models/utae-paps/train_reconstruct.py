@@ -565,7 +565,7 @@ def main(config):
             stats = pstats.Stats(prof).strip_dirs().sort_stats("cumtime")
             stats.print_stats(25) # top k rows
         
-        # do regular validation steps
+        # do regular validation steps at the end of each training epoch
         if epoch % config.val_every == 0 and epoch > config.val_after:
             print("Validation . . . ")
             model.eval()
@@ -602,6 +602,14 @@ def main(config):
         else:
             trainlog[epoch] = {**train_metrics}
             checkpoint(fold+1, trainlog, config)
+
+        # always checkpoint the current epoch's model
+        torch.save({    "epoch": epoch,
+                        "state_dict": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    },
+                    os.path.join(config.res_dir, config.experiment_name, f"model_epoch_{epoch}.pth.tar"),
+                )
 
     # following training, test on hold-out data
     print("Testing best epoch . . .")
