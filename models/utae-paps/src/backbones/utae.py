@@ -162,7 +162,7 @@ class UTAE(nn.Module):
         if self.encoder:
             return out, maps
         else:
-            out = self.out_conv(out)
+            out = self.out_conv(out)[None]
             # optionally apply an output nonlinearity
             if hasattr(self, 'out_sigm'): out=self.out_sigm(out)
             if return_att:

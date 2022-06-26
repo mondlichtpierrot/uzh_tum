@@ -279,7 +279,7 @@ class SEN12MSCRTS(Dataset):
                 # take the first n_input_t samples with cloud coverage e.g. in [0.1, 0.5], ...
                 inputs_idx = [pdx for pdx, perc in enumerate(coverage) if perc >= self.min_cov and perc <= self.max_cov][:self.n_input_t]
                 coverage_match = True  # assume the requested amount of cloud coverage is met
-
+                
                 if len(inputs_idx) < self.n_input_t:
                     # ... if not exists then take the first n_input_t samples (except target patch)
                     inputs_idx = [pdx for pdx in range(len(coverage)) if pdx!=cloudless_idx][:self.n_input_t]

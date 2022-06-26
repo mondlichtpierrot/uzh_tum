@@ -35,7 +35,7 @@ parser.add_argument(
 )
 parser.add_argument(    
     "--experiment_name",
-    default='utae_S1S2_t5_L1SSIM_all', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
+    default='utae_S1S2_t3_L1SSIM_all', # #'utae_S1S2_t4_covweighting_europe', 'utae_S1S2_L1SSIM_perceptual1video_1000samples', #"utae_L1SSIM_perceptual01video",
     help="Name of the current experiment, store outcomes in a subdirectory of the results folder",
 )
 parser.add_argument(
