@@ -1,6 +1,37 @@
 from src.backbones import utae, unet3d, convlstm, convgru, fpn
 from src.panoptic import paps
 
+def get_instance(config):
+    if "utae" in config.model:
+        model = utae.UTAE(
+            input_dim=2*config.use_sar+13, # S1 + S2
+            encoder_widths=config.encoder_widths,
+            decoder_widths=config.decoder_widths,
+            out_conv=config.out_conv,
+            out_nonlin=config.out_nonlin,
+            str_conv_k=config.str_conv_k,
+            str_conv_s=config.str_conv_s,
+            str_conv_p=config.str_conv_p,
+            agg_mode=config.agg_mode,
+            encoder_norm=config.encoder_norm,
+            decoder_norm=config.decoder_norm,
+            n_head=config.n_head,
+            d_model=config.d_model,
+            d_k=config.d_k,
+            encoder=False,
+            return_maps=False,
+            pad_value=config.pad_value,
+            padding_mode=config.padding_mode,
+        )
+    elif "unet3d" in config.model:
+        model = unet3d.UNet3D(
+            in_channel=2*config.use_sar+13, 
+            n_classes=13, 
+            pad_value=config.pad_value,
+            out_nonlin=config.out_nonlin
+        )
+    else: raise NotImplementedError
+    return model
 
 def get_model(config, mode="semantic"):
     if mode == "semantic":
@@ -141,35 +172,12 @@ def get_model(config, mode="semantic"):
         )
         return model
     elif mode == "reconstruct":
-        if config.model == "utae":
-            model = utae.UTAE(
-                input_dim=2*config.use_sar+13, # S1 + S2
-                encoder_widths=config.encoder_widths,
-                decoder_widths=config.decoder_widths,
-                out_conv=config.out_conv,
-                out_sigm=config.out_sigm,
-                str_conv_k=config.str_conv_k,
-                str_conv_s=config.str_conv_s,
-                str_conv_p=config.str_conv_p,
-                agg_mode=config.agg_mode,
-                encoder_norm=config.encoder_norm,
-                decoder_norm=config.decoder_norm,
-                n_head=config.n_head,
-                d_model=config.d_model,
-                d_k=config.d_k,
-                encoder=False,
-                return_maps=False,
-                pad_value=config.pad_value,
-                padding_mode=config.padding_mode,
-        )
-        elif config.model == "unet3d":
-            model = unet3d.UNet3D(
-                in_channel=2*config.use_sar+13, 
-                n_classes=13, 
-                pad_value=config.pad_value,
-                out_sigm=config.out_sigm
-            )
-        else: raise NotImplementedError
+        if "ensemble" in config.model:
+            model = []
+            for m in range(config.ensemble_m):
+                model.append(get_instance(config))
+        else:
+            model = get_instance(config)
         return model
     else:
         raise NotImplementedError

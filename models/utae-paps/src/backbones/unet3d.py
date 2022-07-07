@@ -50,7 +50,7 @@ def up_conv_block(in_dim, out_dim):
 
 
 class UNet3D(nn.Module):
-    def __init__(self, in_channel, n_classes, feats=8, pad_value=None, zero_pad=True, out_sigm=False):
+    def __init__(self, in_channel, n_classes, feats=8, pad_value=None, zero_pad=True, out_nonlin=False):
         super(UNet3D, self).__init__()
         self.in_channel = in_channel
         self.n_classes = n_classes
@@ -67,7 +67,9 @@ class UNet3D(nn.Module):
         self.trans3 = up_conv_block(feats * 8, feats * 4)
         self.dc3 = conv_block(feats * 8, feats * 4, feats * 2)
         self.final = nn.Conv3d(feats * 2, n_classes, kernel_size=3, stride=1, padding=1)
-        if out_sigm: self.out_sigm = nn.Sigmoid()
+        if out_nonlin: 
+            self.out_sigm = nn.Sigmoid() # this is for predicting mean values in [0, 1]
+            self.out_relu = nn.ReLU()    # this is for predicting var values > 0
         # self.fn = nn.Linear(timesteps, 1)
         # self.logsoftmax = nn.LogSoftmax(dim=1)
         # self.dropout = nn.Dropout(p=dropout, inplace=True)
@@ -106,7 +108,11 @@ class UNet3D(nn.Module):
                 out = final.mean(dim=-1)
         else:
             out = final.mean(dim=-1)
-        if hasattr(self, 'out_sigm'): out=self.out_sigm(out)
+        if hasattr(self, 'out_sigm'): 
+            out_mean = self.out_sigm(out[:,:,:13,...]) # mean predictions
+            out_std  = self.out_relu(out[:,:,13:,...]) # var predictions
+            # stack mean and var predictions
+            out      = torch.cat((out_mean, out_std), dim=2)
         # final = self.dropout(final)
         # final = self.fn(final)
         # final = final.reshape(shape_num)

@@ -17,7 +17,7 @@ class UTAE(nn.Module):
         encoder_widths=[64, 64, 64, 128],
         decoder_widths=[32, 32, 64, 128],
         out_conv=[32, 20],
-        out_sigm=False,
+        out_nonlin=False,
         str_conv_k=4,
         str_conv_s=2,
         str_conv_p=1,
@@ -131,8 +131,10 @@ class UTAE(nn.Module):
         )
         self.temporal_aggregator = Temporal_Aggregator(mode=agg_mode)
         # note: use either an output ReLU after the ConvBlock or a sigmoid
-        self.out_conv = ConvBlock(nkernels=[decoder_widths[0]] + out_conv, padding_mode=padding_mode, last_relu=not out_sigm)
-        if out_sigm: self.out_sigm = nn.Sigmoid()
+        self.out_conv = ConvBlock(nkernels=[decoder_widths[0]] + out_conv, padding_mode=padding_mode, last_relu=not out_nonlin)
+        if out_nonlin: 
+            self.out_sigm = nn.Sigmoid() # this is for predicting mean values in [0, 1]
+            self.out_relu = nn.ReLU()    # this is for predicting var values > 0
 
     def forward(self, input, batch_positions=None, return_att=False):
         pad_mask = (
@@ -162,9 +164,16 @@ class UTAE(nn.Module):
         if self.encoder:
             return out, maps
         else:
-            out = self.out_conv(out)[None]
+            out = self.out_conv(out)
+            # append a singelton temporal dimension such that outputs are [B x T=1 x C x H x W]
+            out = out.unsqueeze(1)
             # optionally apply an output nonlinearity
-            if hasattr(self, 'out_sigm'): out=self.out_sigm(out)
+            if hasattr(self, 'out_sigm'): 
+                out_mean = self.out_sigm(out[:,:,:13,...]) # mean predictions
+                out_std  = self.out_relu(out[:,:,13:,...]) # var predictions
+                # stack mean and var predictions
+                out      = torch.cat((out_mean, out_std), dim=2)
+
             if return_att:
                 return out, att
             if self.return_maps:

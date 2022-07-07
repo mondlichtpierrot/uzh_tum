@@ -112,7 +112,7 @@ class SEN12MSCRTS(Dataset):
             self.data_pairs = np.load(import_here, allow_pickle=True).item()
             print(f'Importing data pairings for split {self.split} from {import_here}.')
 
-        self.paths          = self.get_paths()#[:20] ############## TODO: for debugging
+        self.paths          = self.get_paths()[:20] ############## TODO: for debugging
         self.n_samples      = len(self.paths)
 
         # raise a warning that no data has been found
