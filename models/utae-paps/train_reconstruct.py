@@ -118,7 +118,7 @@ parser.add_argument(
     help="If specified, the whole dataset is kept in RAM",
 )
 # Training parameters
-parser.add_argument("--epochs", default=2, type=int, help="Number of epochs per fold")
+parser.add_argument("--epochs", default=100, type=int, help="Number of epochs per fold")
 parser.add_argument("--batch_size", default=5, type=int, help="Batch size")
 parser.add_argument("--lr", default=0.01, type=float, help="Learning rate, e.g. 0.001")
 parser.add_argument("--mono_date", default=None, type=str)
